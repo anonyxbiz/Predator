@@ -223,10 +223,6 @@ class Static:
         except Exception as e:
             raise Error(e)
 
-# ./Modules/compressed_static.py
-from asyncio import to_thread as to
-import Predator as pd
-
 class Serve_compressed(object):
     @classmethod
     async def init(app, **kwargs):

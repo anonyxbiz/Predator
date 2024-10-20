@@ -24,16 +24,45 @@ pip install git+https://github.com/anonyxbiz/predator.git
 Here's a simple example to get you started with Predator:
 
 ```python
-from Predator.Predator import WebApp
+import Predator as pd
+from asyncio import run, to_thread as to
+from json import dumps
 
-app = WebApp()
+web = run(pd.WebApp().init())
 
-@app.route
-async def hello(request):
-    return "Hello, world!"
+# Before middleware
+@web.route
+async def before_middleware(r):
+    if r.method == "POST":
+        r.args = await r.request.json()
+    else:
+        r.args = r.params
+            
+# / route for streaming text response
+@web.route
+async def _(r):
+    stream = await pd.Stream_Response().init(r)
+    await stream.text()
+    await stream.write("Hello, world!")
+    await stream.finish()
 
-if __name__ == "__main__":
-    app.run(host='127.0.0.1', port=8080)
+# /json route for streaming json response
+@web.route
+async def _json(r):
+    stream = await pd.Stream_Response().init(r)
+    await stream.text()
+    await stream.write("Hello, world!")
+    await stream.finish()
+
+# /get/content route    
+@web.route
+async def _get_content(r):
+    await app.get_content(r)
+    
+if __name__ == '__main__':
+    config = run(pd.MyDict().init(host="0.0.0.0", port=8000))
+    web.runner(config)
+    
 ```
 
 ## Configuration

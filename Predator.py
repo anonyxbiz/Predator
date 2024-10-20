@@ -242,7 +242,7 @@ class Serve_compressed(object):
         if not await to_thread(path.exists, r.file):
             raise Error("Not found")
             
-        r.d = pd.MyDict()
+        r.d = MyDict()
     
     async def initialize_response(app, r):
         def _func():

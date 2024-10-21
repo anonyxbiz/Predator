@@ -413,7 +413,7 @@ class WebApp:
                     request.params = {a:b for a,b in request.request.query.items()}
                     request.headers = {a:b for a,b in request.request.headers.items()}
                     request.method = request.request.method
-                    request.ip = request.remote
+                    request.ip = incoming_request.remote
                     
                     request.route_name = "_".join(request.tail.split("/"))
                     request.blocked = 0

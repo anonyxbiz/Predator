@@ -413,7 +413,8 @@ class WebApp:
                     request.params = {a:b for a,b in request.request.query.items()}
                     request.headers = {a:b for a,b in request.request.headers.items()}
                     request.method = request.request.method
-                    request.ip = request.headers.get('X-Forwarded-For', None) or request.headers.get('X-Real-IP', None) or request.headers.get('Forwarded', None)
+                    request.ip = r.request.remote
+                    
                     request.route_name = "_".join(request.tail.split("/"))
                     request.blocked = 0
                     

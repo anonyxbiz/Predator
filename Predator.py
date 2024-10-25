@@ -399,8 +399,8 @@ class WebApp:
     async def gen_request(app, incoming_request):
         if incoming_request is not None:
             async def const_r():
-                ins = await MyDict().init()
-                request = await MyDict().init()
+                ins = MyDict()
+                request = MyDict()
                 
                 def get_system_resources():
                     ins.memory_info = virtual_memory()
@@ -431,7 +431,9 @@ class WebApp:
                     if app.secure_host and not request.headers.get("Host", "0").startswith(app.host):
                         request.blocked = "Unidentified Client"
                     return request
-                return await to_thread(_func)
+                #return await to_thread(_func)
+                return _func()
+                
             return await const_r()
         
     async def router(app, incoming_request):

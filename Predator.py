@@ -406,7 +406,7 @@ class WebApp:
                     ins.memory_info = virtual_memory()
                     ins.aval_gb = float(f"{ins.memory_info.available / (1024 ** 3):.2f}")
                     
-                def _func():
+                async def _func():
                     request.request = incoming_request
                     request.response = None
                     request.tail = request.request.path
@@ -432,7 +432,7 @@ class WebApp:
                         request.blocked = "Unidentified Client"
                     return request
                 # return await to_thread(_func)
-                return _func()
+                return await _func()
                 
             return await const_r()
         

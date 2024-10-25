@@ -536,7 +536,9 @@ class WebApp:
             pass
         except Exception as e:
             p(e)
- 
+        except BaseException as e:
+            p("Base Exception catched: %s" % str(e))
+            
 if __name__ == '__main__':
     config = run(MyDict(host="0.0.0.0", port=8000, ssl={"certfile": "cert.pem", "keyfile": "key.pem"}))
     wb.runner(config)

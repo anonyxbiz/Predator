@@ -534,7 +534,8 @@ class WebApp:
         except KeyboardInterrupt: exit()
         except (ConnectionResetError, OSError) as e:
             pass
-        except: pass
+        except Exception as e:
+            p(e)
  
 if __name__ == '__main__':
     config = run(MyDict(host="0.0.0.0", port=8000, ssl={"certfile": "cert.pem", "keyfile": "key.pem"}))

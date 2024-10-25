@@ -421,7 +421,7 @@ class WebApp:
                     if not "_" in request.route_name: request.route_name = "_"
                     request.full_tail = request.route_name + "?" + "&&".join([f"{a}={b}" for a, b in request.params.items()])
                     
-                    p(f"[{request.ip or '127.0.0.1'}] :{request.method}: @{request.tail[:100]}")
+                    p(f"[{request.ip or '127.0.0.1'}] :{request.method}: @{request.tail}")
                     
                     if app.ddos_protection:
                         get_system_resources()
@@ -431,7 +431,7 @@ class WebApp:
                     if app.secure_host and not request.headers.get("Host", "0").startswith(app.host):
                         request.blocked = "Unidentified Client"
                     return request
-                #return await to_thread(_func)
+                # return await to_thread(_func)
                 return _func()
                 
             return await const_r()
@@ -439,7 +439,7 @@ class WebApp:
     async def router(app, incoming_request):
         try:
             request = await app.gen_request(incoming_request)
-            if request.blocked: raise Error(request.blocked)
+            # if request.blocked: raise Error(request.blocked)
             
             if (a := "before_middleware") in app.methods:
                 if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
@@ -491,7 +491,11 @@ class WebApp:
         return request.response
                 
     async def handle(app, request):
-        return await app.router(request)
+        try:
+            r = await app.router(request)
+            return r
+        except Exception as e:
+            p("Exception catched: %s" % e)
     
     def setup_ssl(app):
         if not path.exists(f"{app.app_config.certfile}") or not path.exists(f"{app.app_config.keyfile}"):

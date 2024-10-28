@@ -149,14 +149,18 @@ class Static:
         return app
         
     async def static_file_server(app, r, override_file=0, serve_chunk=0, arg="serve"):
-        if not (file := override_file):
-            if not (file := r.params.get(arg, 0)):
-                raise Error("serve parameter is required.")
-            file = f"./static/{file}"
-        else:
-            file = str(file)
+        def get_file():
+            if not (file := override_file):
+                if not (file := r.params.get(arg, 0)):
+                    raise Error("serve parameter is required.")
+                file = f"./static/{file}"
+            else:
+                file = str(file)
+            return file
         
-        d = await MyDict().init()
+        file = await to_thread(get_file)
+        
+        d = MyDict()
         
         async def meta():
             def _func():
@@ -372,8 +376,8 @@ class WebApp:
         return func
 
     async def log(app, e):
-        ins = await MyDict().init()
         def _func():
+            ins = MyDict()
             known_exceps = ["transport", "Task"]
             ins.fname=inspect_stack()[3].function
             ins.e, ins.log = str(e), 0
@@ -399,12 +403,13 @@ class WebApp:
     async def gen_request(app, incoming_request):
         if incoming_request is not None:
             async def const_r():
-                ins = MyDict()
                 request = MyDict()
                 
                 def get_system_resources():
+                    ins = MyDict()
                     ins.memory_info = virtual_memory()
                     ins.aval_gb = float(f"{ins.memory_info.available / (1024 ** 3):.2f}")
+                    return ins
                     
                 async def _func():
                     request.request = incoming_request
@@ -422,16 +427,17 @@ class WebApp:
                     request.full_tail = request.route_name + "?" + "&&".join([f"{a}={b}" for a, b in request.params.items()])
                     
                     p(f"[{request.ip or '127.0.0.1'}] :{request.method}: @{request.tail}")
-                    
+
+                    if app.secure_host and not request.headers.get("Host", "0").startswith(app.host):
+                        request.blocked = "Unidentified Client"
+
                     if app.ddos_protection:
-                        get_system_resources()
+                        ins = await to_thread(get_system_resources,)
                         if ins.aval_gb <= app.throttle_at_ram:
                             request.blocked = f"Our server is currently busy, remaining resources are: {ins.aval_gb} GB, try again later when resources are available."
                             
-                    if app.secure_host and not request.headers.get("Host", "0").startswith(app.host):
-                        request.blocked = "Unidentified Client"
                     return request
-                # return await to_thread(_func)
+                    
                 return await _func()
                 
             return await const_r()
@@ -439,7 +445,7 @@ class WebApp:
     async def router(app, incoming_request):
         try:
             request = await app.gen_request(incoming_request)
-            # if request.blocked: raise Error(request.blocked)
+            if request.blocked: raise Error(request.blocked)
             
             if (a := "before_middleware") in app.methods:
                 if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
@@ -482,20 +488,17 @@ class WebApp:
                     request.response = web.json_response({"detail": msg}, status=403)
                 await app.log(e)
             except: pass
-        finally:
-            try:
-                request.response.headers.update(app.response_headers)
-            except KeyboardInterrupt: pass
-            except: pass
+        
+        try:
+            request.response.headers.update(app.response_headers)
+        except KeyboardInterrupt: pass
+        except Exception as e:
+            await app.log(e)
             
         return request.response
                 
     async def handle(app, request):
-        try:
-            r = await app.router(request)
-            return r
-        except Exception as e:
-            p("Exception catched: %s" % e)
+        return await app.router(request)
     
     def setup_ssl(app):
         if not path.exists(f"{app.app_config.certfile}") or not path.exists(f"{app.app_config.keyfile}"):
@@ -509,7 +512,7 @@ class WebApp:
     async def run(app, app_config: MyDict):
         app.app_config = app_config
         server = web.Server(app.handle)
-        server.client_max_size = 1024*1024*1024*1024*1024
+        server.client_max_size = None
         app.app_config.runner = web.ServerRunner(server)
             
         await app.app_config.runner.setup()

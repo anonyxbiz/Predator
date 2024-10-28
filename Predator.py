@@ -149,20 +149,18 @@ class Static:
         return app
         
     async def static_file_server(app, r, override_file=0, serve_chunk=0, arg="serve"):
-        def get_file():
+        async def get_file():
             if not (file := override_file):
-                if not (file := r.params.get(arg, 0)):
+                if not (file := r.params.get(arg)):
                     raise Error("serve parameter is required.")
                 file = f"./static/{file}"
             else:
                 file = str(file)
             return file
         
-        file = await to_thread(get_file)
-        
-        d = MyDict()
-        
         async def meta():
+            file = await get_file()
+            d = MyDict()
             def _func():
                 if not path.exists(file): raise Error("Not found")
                 d.fname = file
@@ -211,11 +209,11 @@ class Static:
             else:
                 raise Error("Something went wrong")
                 
-        _ = await meta()
+        d = await meta()
         
         try:
             async with iopen(d.fname, "rb") as f:
-                while 1:
+                while True:
                     await f.seek(d.start)
                     if not (chunk := await f.read(serve_chunk or 1024)): break
                     else:

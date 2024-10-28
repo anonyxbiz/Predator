@@ -208,7 +208,9 @@ class Static:
                 )
             else:
                 raise Error("Something went wrong")
-                
+            
+            return d
+            
         d = await meta()
         
         try:

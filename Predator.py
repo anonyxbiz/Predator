@@ -159,8 +159,8 @@ class Static:
         
         async def meta():
             file = await get_file()
-            d = MyDict()
             def _func():
+                d = MyDict()
                 if not path.exists(file): raise Error("Not found")
                 d.fname = file
                 d.filename = path.basename(d.fname)
@@ -190,9 +190,10 @@ class Static:
                     d.status = 200
                 
                 d.ready = 1
+                return d
                 
-            _ = await to_thread(_func)
-            
+            d = await to_thread(_func)
+
             if d and "ready" in d.__dict__:
                 r.stream = await Stream_Response().init(r, status=d.status)
                 
@@ -225,7 +226,7 @@ class Static:
             return r
         except Exception as e:
             raise Error(e)
-            
+
 class WebApp:
     async def init(app):
         app.Static = await Static().init()
@@ -434,4 +435,5 @@ class WebApp:
             
 if __name__ == '__main__':
     config = run(MyDict(host="0.0.0.0", port=8000, ssl={"certfile": "cert.pem", "keyfile": "key.pem"}))
+    wb = run(WebApp().init())
     wb.runner(config)

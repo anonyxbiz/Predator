@@ -426,10 +426,10 @@ class WebApp:
                     
             run(app.run(app_config))
         except KeyboardInterrupt: exit()
-        except (ConnectionResetError, OSError) as e:
+        except (ConnectionResetError, OSError, AttributeError) as e:
             pass
         except Exception as e:
-            p(e)
+            p("Exception catched: %s" % str(e))
         except BaseException as e:
             p("Base Exception catched: %s" % str(e))
             

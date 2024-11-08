@@ -317,7 +317,7 @@ class WebApp:
                     ins.aval_gb = float(f"{ins.memory_info.available / (1024 ** 3):.2f}")
                     return ins
                     
-                def _func():
+                async def _func():
                     request.request = incoming_request
                     request.response = None
                     request.tail = request.request.path
@@ -338,13 +338,13 @@ class WebApp:
                         request.blocked = "Unidentified Client"
 
                     if app.ddos_protection:
-                        ins = get_system_resources()
+                        ins = await to_thread(get_system_resources,)
                         if ins.aval_gb <= app.throttle_at_ram:
                             request.blocked = f"Our server is currently busy, remaining resources are: {ins.aval_gb} GB, try again later when resources are available."
                             
                     return request
                     
-                return await to_thread(_func,)
+                return await _func()
                 
             return await const_r()
         
@@ -357,20 +357,23 @@ class WebApp:
                 if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
                 
                 if (_ := await app.methods[a]["func"](request)) is not None:
-                    if await to_thread(isinstance, _, (MyDict,)): request = _
+                    request = _
+                    #if await to_thread(isinstance, _, (MyDict,)): request = _
 
             if request.response is None and request.route_name in app.methods:
                 if request.method not in app.methods[request.route_name]["methods"]: raise Error("Method not allowed")
                 
                 if (_ := await app.methods[request.route_name]["func"](request)) is not None:
-                    if await to_thread(isinstance, _, (MyDict,)): request = _
+                    # if await to_thread(isinstance, _, (MyDict,)): request = _
+                    request = _
                 
             if request.response is None:
                 if (a := "not_found_method") in app.methods or (a := "handle_all") in app.methods:
                     if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
                 
                     if (_ := await app.methods[a]["func"](request)) is not None:
-                        if await to_thread(isinstance, _, (MyDict,)): request = _
+                        # if await to_thread(isinstance, _, (MyDict,)): request = _
+                        request = _
                         if request.response is None:
                             raise Error("Not found")
                 else:
@@ -378,7 +381,8 @@ class WebApp:
             
             if (a := "after_middleware") in app.methods:
                 if (_ := await app.methods[a]["func"](request)) is not None:
-                    if await to_thread(isinstance, _, (MyDict,)): request = _
+                    # if await to_thread(isinstance, _, (MyDict,)): request = _
+                    request = _
                     
         except Error as e:
             if request.response is None:
@@ -401,7 +405,6 @@ class WebApp:
                 request.response = web.json_response({"detail": msg}, status=403)
                 
             request.response.headers.update(app.response_headers)
-
         except Exception as e:
             pass
         

@@ -147,85 +147,104 @@ class Static:
         app.__dict__.update(kwargs)
         return app
         
-    async def static_file_server(app, r, override_file=0, serve_chunk=0, arg="serve"):
-        async def get_file():
-            if not (file := override_file):
-                if not (file := r.params.get(arg)):
+    async def initialize_response(app, r):
+        def _func():
+            if not (file := r.override_file):
+                if not (file := r.params.get(r.arg)):
                     raise Error("serve parameter is required.")
-                file = f"./static/{file}"
-            else:
-                file = file
-            return file
-        
-        async def meta():
-            file = await get_file()
-            def _func():
-                d = MyDict()
-                if not path.exists(file): raise Error("Not found")
-                d.fname = file
-                d.filename = path.basename(d.fname)
-                d.file_size = path.getsize(d.fname)
-                d.content_type, _ = guess_type(d.fname)
-                d.content_disposition = 'inline; filename="{}"'.format(d.filename)
-                
-                if (range_header := r.headers.get('Range', r.params.get('Range', None))):
-                    d.start, d.end = (byte_range := range_header.strip().split('=')[1]).split('-')
-                    d.start = int(d.start)
-                    d.end = int(d.end) if d.end else d.file_size - 1
-                else:
-                    d.start, d.end = 0, d.file_size - 1
-
-                d.content_range = f'bytes {d.start}-{d.end}/{d.file_size}' if r.headers.get("Range", None) else ''
-                
-                d.content_length = str(d.end - d.start + 1)
-            
-                if not d.content_type:
-                    d.content_type = "application/octet-stream"
-                    d.content_disposition = 'attachment; filename="{}"'.format(d.filename)
                     
-                d.status = 206 
-                if (range_header:=r.headers.get("Range", None)):
-                    d.status = 206
-                else:
-                    d.status = 200
-                
-                d.ready = 1
-                return d
-                
-            d = await to_thread(_func)
-
-            if d and "ready" in d.__dict__:
-                r.stream = await Stream_Response().init(r, status=d.status)
-                
-                r.response.headers.update(
-                    {
-                        'Content-Range': d.content_range,
-                        'Accept-Ranges': 'bytes',
-                        'Content-Length': d.content_length,
-                        'Content-Type': d.content_type,
-                        'Content-Disposition': d.content_disposition
-                    }
-                )
+                r.file = "./static/%s" % (file)
             else:
-                raise Error("Something went wrong")
-            
-            return d
-            
-        d = await meta()
-        
-        try:
-            async with iopen(d.fname, "rb") as f:
-                while True:
-                    await f.seek(d.start)
-                    if not (chunk := await f.read(serve_chunk or 1024)): break
-                    else:
-                        d.start += len(chunk)
-                        await r.stream.write(chunk)
+                r.file = file
                 
-                await r.stream.finish()
-            return r
-        except Exception as e:
-            raise Error(e)
+            if not path.exists(r.file):
+                raise Error("Not found")
+                
+            r.d = MyDict()
+
+            r.d.fname = r.file
+            r.d.filename = path.basename(r.d.fname)
+            r.d.file_size = path.getsize(r.d.fname)
+                
+            r.d.content_type, _ = guess_type(r.d.fname)
+            r.d.content_disposition = 'inline; filename="%s"' % (r.d.filename)
+                
+            if (range_header := r.headers.get('Range', r.params.get('Range', None))):
+                r.d.start, r.d.end = (byte_range := range_header.strip().split('=')[1]).split('-')
+                    
+                r.d.start = int(r.d.start)
+                r.d.end = int(r.d.end) if r.d.end else r.d.file_size - 1
+            else:
+                r.d.start, r.d.end = 0, r.d.file_size - 1
+
+            r.d.content_range = 'bytes %s-%s/%s' % (r.d.start, r.d.end, r.d.file_size) if r.headers.get("Range", None) else ''
+                
+            r.d.content_length = str(r.d.end - r.d.start + 1)
+            
+            if not r.d.content_type:
+                r.d.content_type = "application/octet-stream"
+                r.d.content_disposition = 'attachment; filename="%s"' % (r.d.filename)
+                    
+            if range_header is not None:
+                r.d.status = 206
+            else:
+                r.d.status = 200
+                
+        await to_thread(_func)
+        
+        if r.d:
+            headers = {
+                'Server': 'Predator',
+                'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
+                'X-Frame-Options': 'SAMEORIGIN',
+                'X-XSS-Protection': '1; mode=block',
+                'Referrer-Policy': 'origin-when-cross-origin',
+                'Permissions-Policy': 'geolocation=(self), microphone=()',
+                'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+                'Date': 'redacted',
+                'Content-Range': r.d.content_range,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': r.d.content_length,
+                'Content-Type': r.d.content_type,
+                'Content-Disposition': r.d.content_disposition
+            }
+            
+            r.response = web.StreamResponse(
+                status=r.d.status,
+                headers=headers
+            )
+        else:
+            raise Error("Something went wrong")
+        
+        return r
+        
+    async def static_file_server(app, r, override_file=0, serve_chunk=0, arg="serve"):
+        r.override_file = override_file
+        r.serve_chunk = serve_chunk
+        r.arg = arg
+
+        r = await app.initialize_response(r)
+        
+        async with iopen(r.d.fname, "rb") as f:
+            if not r.response.prepared:
+                await r.response.prepare(r.request)
+
+            while True:
+                try:
+                    await f.seek(r.d.start)
+                    if not (chunk := await f.read(r.serve_chunk or 1024)):
+                        break
+                    
+                    r.d.start += len(chunk)
+                    await r.response.write(chunk)
+                except Exception as e:
+                    if not "Cannot write to closing transport" in str(e):
+                        p(e)
+                    return r
+            
+            await r.response.write_eof()
+            
+        return r
 
 class WebApp:
     async def init(app):
@@ -298,7 +317,7 @@ class WebApp:
                     ins.aval_gb = float(f"{ins.memory_info.available / (1024 ** 3):.2f}")
                     return ins
                     
-                async def _func():
+                def _func():
                     request.request = incoming_request
                     request.response = None
                     request.tail = request.request.path
@@ -319,13 +338,13 @@ class WebApp:
                         request.blocked = "Unidentified Client"
 
                     if app.ddos_protection:
-                        ins = await to_thread(get_system_resources,)
+                        ins = get_system_resources()
                         if ins.aval_gb <= app.throttle_at_ram:
                             request.blocked = f"Our server is currently busy, remaining resources are: {ins.aval_gb} GB, try again later when resources are available."
                             
                     return request
                     
-                return await _func()
+                return await to_thread(_func,)
                 
             return await const_r()
         
@@ -336,21 +355,22 @@ class WebApp:
             
             if (a := "before_middleware") in app.methods:
                 if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
+                
                 if (_ := await app.methods[a]["func"](request)) is not None:
-                    if isinstance(_, (MyDict,)): request = _
-                    
+                    if await to_thread(isinstance, _, (MyDict,)): request = _
+
             if request.response is None and request.route_name in app.methods:
                 if request.method not in app.methods[request.route_name]["methods"]: raise Error("Method not allowed")
                 
                 if (_ := await app.methods[request.route_name]["func"](request)) is not None:
-                    if isinstance(_, (MyDict,)): request = _
+                    if await to_thread(isinstance, _, (MyDict,)): request = _
                 
             if request.response is None:
                 if (a := "not_found_method") in app.methods or (a := "handle_all") in app.methods:
                     if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
                 
                     if (_ := await app.methods[a]["func"](request)) is not None:
-                        if isinstance(_, (MyDict,)): request = _
+                        if await to_thread(isinstance, _, (MyDict,)): request = _
                         if request.response is None:
                             raise Error("Not found")
                 else:
@@ -358,11 +378,12 @@ class WebApp:
             
             if (a := "after_middleware") in app.methods:
                 if (_ := await app.methods[a]["func"](request)) is not None:
-                    if isinstance(_, (MyDict,)): request = _
-
+                    if await to_thread(isinstance, _, (MyDict,)): request = _
+                    
         except Error as e:
             if request.response is None:
                 request.response = web.json_response({"detail": str(e)}, status=403)
+                
         except KeyboardInterrupt:
             pass
         except Exception as e:
@@ -371,17 +392,21 @@ class WebApp:
             else:
                 msg = "Unexpected 403"
             await app.log(e)
+            
+        return await app.finalize_request(request)
+
+    async def finalize_request(app, request):
+        try:
             if request.response is None:
                 request.response = web.json_response({"detail": msg}, status=403)
-        finally:
-            try:
-                request.response.headers.update(app.response_headers)
-            except KeyboardInterrupt: pass
-            except Exception as e:
-                pass
                 
+            request.response.headers.update(app.response_headers)
+
+        except Exception as e:
+            pass
+        
         return request.response
-                
+        
     async def handle(app, request):
         return await app.router(request)
     

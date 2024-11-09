@@ -108,7 +108,7 @@ class Stream_Response(object):
             await app.r.response.prepare(app.r.request)
     
         try:
-            if 1:
+            if 0:
                 if await to_thread(isinstance, content, (str,)):
                     content = content.encode()
             else:
@@ -199,7 +199,7 @@ class Static:
         return app
         
     async def initialize_response(app, r):
-        def _func():
+        async def _func():
             if not (file := r.override_file):
                 if not (file := r.params.get(r.arg)):
                     raise Error("serve parameter is required.")
@@ -241,7 +241,8 @@ class Static:
             else:
                 r.d.status = 200
                 
-        await to_thread(_func)
+        # await to_thread(_func)
+        await _func()
         
         if r.d:
             headers = {

@@ -377,7 +377,7 @@ class WebApp(object):
                     ins.aval_gb = float(f"{ins.memory_info.available / (1024 ** 3):.2f}")
                     return ins
                     
-                def _func():
+                async def _func():
                     request.request = incoming_request
                     request.response = None
                     request.tail = request.request.path
@@ -405,7 +405,7 @@ class WebApp(object):
                             
                     return request
                     
-                return await to_thread(_func,)
+                return await _func()
                 
             return await const_r()
         

@@ -6,7 +6,7 @@ with open('requirements.txt') as f:
 
 setup(
     name="Predator",
-    version="1.3.2",
+    version="1.3.3",
     description="Predator.",
     author="Anonyxbiz",
     author_email="anonyxbiz@gmail.com",

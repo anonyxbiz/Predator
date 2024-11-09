@@ -199,7 +199,7 @@ class Static:
         return app
         
     async def initialize_response(app, r):
-        async def _func():
+        def _func():
             if not (file := r.override_file):
                 if not (file := r.params.get(r.arg)):
                     raise Error("serve parameter is required.")
@@ -241,8 +241,8 @@ class Static:
             else:
                 r.d.status = 200
                 
-        # await to_thread(_func)
-        await _func()
+        await to_thread(_func)
+        # await _func()
         
         if r.d:
             headers = {
@@ -377,7 +377,7 @@ class WebApp(object):
                     ins.aval_gb = float(f"{ins.memory_info.available / (1024 ** 3):.2f}")
                     return ins
                     
-                async def _func():
+                def _func():
                     request.request = incoming_request
                     request.response = None
                     request.tail = request.request.path
@@ -398,13 +398,14 @@ class WebApp(object):
                         request.blocked = "Unidentified Client"
 
                     if app.ddos_protection:
-                        ins = await to_thread(get_system_resources,)
+                        # ins = await to_thread(get_system_resources,)
+                        ins = get_system_resources()
                         if ins.aval_gb <= app.throttle_at_ram:
                             request.blocked = f"Our server is currently busy, remaining resources are: {ins.aval_gb} GB, try again later when resources are available."
                             
                     return request
                     
-                return await _func()
+                return await to_thread(_func,)
                 
             return await const_r()
         

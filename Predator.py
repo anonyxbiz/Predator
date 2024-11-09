@@ -442,14 +442,19 @@ class WebApp(object):
                     pass
                     
         except Error as e:
-            if request.response is None:
-                request.response = web.json_response({"detail": str(e)}, status=403)
-                
+            try:
+                request.stream = await Stream_Response.init(request, status=403)
+                await request.stream.json()
+                await request.stream.write('{"detail": "')
+                await request.stream.write(str(e))
+                await request.stream.finish('"}')
+            except Exception as e:
+                await app.log(e)
+
         except KeyboardInterrupt:
             pass
         except Exception as e:
             await app.log(e)
-
             if app.dev:
                 msg = str(e)
             else:

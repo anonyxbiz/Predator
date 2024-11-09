@@ -108,7 +108,7 @@ class Stream_Response(object):
             await app.r.response.prepare(app.r.request)
     
         try:
-            if 0:
+            if 1:
                 if await to_thread(isinstance, content, (str,)):
                     content = content.encode()
             else:

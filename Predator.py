@@ -7,11 +7,12 @@ from psutil import virtual_memory
 from aiofiles import open as iopen
 from os import path
 from mimetypes import guess_type
-from asyncio import CancelledError, to_thread, run, sleep
-from aiohttp import web
+from asyncio import CancelledError, to_thread, run, sleep, create_task
+from aiohttp import web, ClientConnectionError
 from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
 from base64 import b64encode, b64decode
+from gc import collect
 
 p = print
 
@@ -47,7 +48,6 @@ class Stuff(object):
                 response_headers[a] = b
         
         if kwargs:
-            # await to_thread(func)
             await func()
         return response_headers
 
@@ -59,16 +59,27 @@ class Error(Exception):
     def __str__(app) -> str:
         return app.message
 
-class Stream_Response:
+class Stream_Response(object):
+    @classmethod
     async def init(app, r, **kwargs):
+        app = app()
         app.r = r
-        app.stuff = await Stuff.init()
-        headers = await app.stuff.headers()
-        headers.update(kwargs.get("headers", {}))
+        app.response_headers = {
+            'Server': 'Predator',
+            'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
+            'X-Frame-Options': 'SAMEORIGIN',
+            'X-XSS-Protection': '1; mode=block',
+            'Referrer-Policy': 'origin-when-cross-origin',
+            'Permissions-Policy': 'geolocation=(self), microphone=()',
+            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+            'Date': 'redacted',
+        }
+        
+        app.response_headers.update(kwargs.get("headers", {}))
+
         app.r.response = web.StreamResponse(
             status=kwargs.get("status", 200),
-            reason=kwargs.get("reason", "OK"),
-            headers=headers
+            headers=app.response_headers
         )
         return app
     
@@ -95,20 +106,60 @@ class Stream_Response:
     async def write(app, content):
         if not app.r.response.prepared:
             await app.r.response.prepare(app.r.request)
+    
+        try:
+            if 0:
+                if await to_thread(isinstance, content, (str,)):
+                    content = content.encode()
+            else:
+                if isinstance(content, (str,)):
+                    content = content.encode()
+        except UnicodeError:
+            pass
+        except TypeError:
+            pass
+        except Exception as e:
+            p(e)
             
-        if not isinstance(content, (bytes, bytearray)):
-            content = content.encode()
-            
-        try: await app.r.response.write(content)
-        except Exception as e: raise Error(e)
+        try:
+            await app.r.response.write(content)
+        except Exception as e:
+            p(e)
+            raise Error(e)
 
     async def finish(app, content=None):
         if content is not None:
             await app.write(content)
+        try:
+            await app.r.response.write_eof()
+        except Exception as e:
+            p(e)
+
+class Garbage(object):
+    jobs = []
+    @classmethod
+    async def init(app, **kwargs):
+        app = app()
+        return app
+
+    async def cleaner(app):
+        while True:
+            try:
+                await to_thread(collect,)
+                await sleep(30)
+            except Exception as e:
+                p(e)
+                break
             
-        try: await app.r.response.write_eof()
-        except Exception as e: raise Error(e)
-             
+    async def collect(app, workers=None):
+        if not workers:
+            workers = [app.cleaner]
+
+        for worker in workers:
+            app.jobs.append(
+                create_task(worker())
+            )
+                
 class Safe:
     def __init__(app, key, salt="Kim Jong Un"):
         app.salt = str(salt)
@@ -246,8 +297,11 @@ class Static:
             
         return r
 
-class WebApp:
-    async def init(app):
+class WebApp(object):
+    @classmethod
+    async def init(app, **kwargs):
+        app = app()
+        app.__dict__.update(kwargs)
         app.Static = await Static().init()
         app.Stuff = await Stuff.init()
         app.web = web
@@ -258,6 +312,11 @@ class WebApp:
         app.ddos_protection = 0
         app.throttle_at_ram = 0.20
         app.secure_host = 0
+
+        if "collect_garbage" in app.__dict__:
+            garbage = await Garbage.init()
+            await garbage.collect()
+
         return app
         
     def route(app, func: Callable):
@@ -281,6 +340,7 @@ class WebApp:
         return func
 
     async def log(app, e):
+        e = str(e)
         async def _func():
             ins = MyDict()
             known_exceps = ["transport", "Task"]
@@ -303,9 +363,8 @@ class WebApp:
                     str_ = str_[:100]
                 p(str_)
                 
-        # await to_thread(_func)
         await _func()
-        
+
     async def gen_request(app, incoming_request):
         if incoming_request is not None:
             async def const_r():
@@ -357,32 +416,30 @@ class WebApp:
                 if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
                 
                 if (_ := await app.methods[a]["func"](request)) is not None:
-                    request = _
-                    #if await to_thread(isinstance, _, (MyDict,)): request = _
+                    pass
 
             if request.response is None and request.route_name in app.methods:
-                if request.method not in app.methods[request.route_name]["methods"]: raise Error("Method not allowed")
+                if request.method not in app.methods[request.route_name]["methods"]:
+                    raise Error("Method not allowed")
                 
                 if (_ := await app.methods[request.route_name]["func"](request)) is not None:
-                    # if await to_thread(isinstance, _, (MyDict,)): request = _
-                    request = _
+                    pass
                 
             if request.response is None:
                 if (a := "not_found_method") in app.methods or (a := "handle_all") in app.methods:
                     if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
                 
                     if (_ := await app.methods[a]["func"](request)) is not None:
-                        # if await to_thread(isinstance, _, (MyDict,)): request = _
-                        request = _
-                        if request.response is None:
-                            raise Error("Not found")
+                        pass
+                    if request.response is None:
+                        raise Error("Not found")
+                        
                 else:
                     raise Error("Not found")
             
             if (a := "after_middleware") in app.methods:
                 if (_ := await app.methods[a]["func"](request)) is not None:
-                    # if await to_thread(isinstance, _, (MyDict,)): request = _
-                    request = _
+                    pass
                     
         except Error as e:
             if request.response is None:
@@ -391,28 +448,66 @@ class WebApp:
         except KeyboardInterrupt:
             pass
         except Exception as e:
+            await app.log(e)
+
             if app.dev:
                 msg = str(e)
             else:
                 msg = "Unexpected 403"
-            await app.log(e)
+                
+            request.stream = await Stream_Response.init(request, status=403)
             
+            await request.stream.json()
+            await request.stream.write('{"detail": "')
+            await request.stream.write(msg)
+            await request.stream.finish('"}')
+
         return await app.finalize_request(request)
 
     async def finalize_request(app, request):
         try:
             if request.response is None:
-                request.response = web.json_response({"detail": msg}, status=403)
+                request.stream = await Stream_Response.init(request, status=500)
+
+                await request.stream.json()
+                await request.stream.write('{"detail": "')
+                await request.stream.write('Response not set.')
+                await request.stream.finish('"}')
                 
             request.response.headers.update(app.response_headers)
         except Exception as e:
-            pass
+            await app.log(e)
         
-        return request.response
-        
-    async def handle(app, request):
-        return await app.router(request)
+        try:
+            return request.response
+        except Exception as e:
+            await app.log(e)
     
+    async def handle(app, request):
+        """Request handler from aiohttp web.server"""
+        try:
+            r = await app.router(request)
+            
+            if r is None:
+                raise Error("Response was None")
+            return r
+            
+        except (ConnectionResetError, OSError, AttributeError, TypeError) as e:
+            return await app.handle_connection_error(app, request, e)
+        except ClientConnectionError as e:
+            return await app.handle_connection_error(app, request, e)
+        except Error as e:
+            return await app.handle_connection_error(app, request, e)
+        except Exception as e:
+            return await app.handle_connection_error(app, request, e)
+            
+    async def handle_connection_error(app, request, err):
+        try:
+            await app.log("Request handling error: %s" % err)
+            await request.cancel()
+        except Exception as e:
+            p(e)
+
     def setup_ssl(app):
         if not path.exists(f"{app.app_config.certfile}") or not path.exists(f"{app.app_config.keyfile}"):
             from os import system

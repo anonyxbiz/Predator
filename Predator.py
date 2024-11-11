@@ -200,7 +200,7 @@ class Static:
         return app
         
     async def initialize_response(app, r):
-        async def _func():
+        def _func():
             if not (file := r.override_file):
                 if not (file := r.params.get(r.arg)):
                     raise Error("serve parameter is required.")
@@ -242,8 +242,8 @@ class Static:
             else:
                 r.d.status = 200
                 
-        # await to_thread(_func)
-        await _func()
+        await to_thread(_func)
+        # await _func()
         
         if r.d:
             headers = {

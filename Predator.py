@@ -114,6 +114,7 @@ class Stream_Response(object):
             else:
                 if isinstance(content, (str,)):
                     content = content.encode()
+
         except UnicodeError:
             pass
         except TypeError:
@@ -142,22 +143,22 @@ class Garbage(object):
         app = app()
         return app
 
-    async def cleaner(app):
+    async def cleaner(app, garbage_collection_frequency):
         while True:
             try:
                 await to_thread(collect,)
-                await sleep(30)
+                await sleep(garbage_collection_frequency)
             except Exception as e:
                 p(e)
                 break
             
-    async def collect(app, workers=None):
+    async def collect(app, garbage_collection_frequency=30, workers=None):
         if not workers:
             workers = [app.cleaner]
 
         for worker in workers:
             app.jobs.append(
-                create_task(worker())
+                create_task(worker(garbage_collection_frequency))
             )
                 
 class Safe:
@@ -199,7 +200,7 @@ class Static:
         return app
         
     async def initialize_response(app, r):
-        def _func():
+        async def _func():
             if not (file := r.override_file):
                 if not (file := r.params.get(r.arg)):
                     raise Error("serve parameter is required.")
@@ -241,8 +242,8 @@ class Static:
             else:
                 r.d.status = 200
                 
-        await to_thread(_func)
-        # await _func()
+        # await to_thread(_func)
+        await _func()
         
         if r.d:
             headers = {
@@ -252,7 +253,8 @@ class Static:
                 'X-XSS-Protection': '1; mode=block',
                 'Referrer-Policy': 'origin-when-cross-origin',
                 'Permissions-Policy': 'geolocation=(self), microphone=()',
-                'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+                'Cache-Control': 'public, max-age=31536000, immutable',
+                'Expires': 'Wed, 21 Oct 2029 07:28:00 GMT',
                 'Date': 'redacted',
                 'Content-Range': r.d.content_range,
                 'Accept-Ranges': 'bytes',
@@ -316,7 +318,7 @@ class WebApp(object):
 
         if "collect_garbage" in app.__dict__:
             garbage = await Garbage.init()
-            await garbage.collect()
+            await garbage.collect(app.__dict__.get("garbage_collection_frequency", 30))
 
         return app
         
@@ -398,8 +400,8 @@ class WebApp(object):
                         request.blocked = "Unidentified Client"
 
                     if app.ddos_protection:
-                        # ins = await to_thread(get_system_resources,)
-                        ins = get_system_resources()
+                        ins = await to_thread(get_system_resources,)
+                        # ins = get_system_resources()
                         if ins.aval_gb <= app.throttle_at_ram:
                             request.blocked = f"Our server is currently busy, remaining resources are: {ins.aval_gb} GB, try again later when resources are available."
                             
@@ -500,13 +502,13 @@ class WebApp(object):
             return r
             
         except (ConnectionResetError, OSError, AttributeError, TypeError) as e:
-            return await app.handle_connection_error(app, request, e)
+            return await app.handle_connection_error(request, e)
         except ClientConnectionError as e:
-            return await app.handle_connection_error(app, request, e)
+            return await app.handle_connection_error(request, e)
         except Error as e:
-            return await app.handle_connection_error(app, request, e)
+            return await app.handle_connection_error(request, e)
         except Exception as e:
-            return await app.handle_connection_error(app, request, e)
+            return await app.handle_connection_error(request, e)
             
     async def handle_connection_error(app, request, err):
         try:

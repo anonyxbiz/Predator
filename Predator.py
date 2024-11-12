@@ -13,6 +13,7 @@ from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
 from base64 import b64encode, b64decode
 from gc import collect
+from datetime import datetime as dt, timedelta
 
 p = print
 
@@ -200,7 +201,7 @@ class Static:
         return app
         
     async def initialize_response(app, r):
-        def _func():
+        async def _func():
             if not (file := r.override_file):
                 if not (file := r.params.get(r.arg)):
                     raise Error("serve parameter is required.")
@@ -242,20 +243,23 @@ class Static:
             else:
                 r.d.status = 200
                 
-        await to_thread(_func)
-        # await _func()
+            expires_date = dt.utcnow() + timedelta(hours=24)
+            expires_str = expires_date.strftime('%a, %d %b %Y %H:%M:%S GMT')
+            r.d.Expires = expires_str
+                        
+        # await to_thread(_func)
+        await _func()
         
         if r.d:
             headers = {
                 'Server': 'Predator',
-                'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
+                'Strict-Transport-Security': 'max-age=63072000; includeSubdomains',
                 'X-Frame-Options': 'SAMEORIGIN',
                 'X-XSS-Protection': '1; mode=block',
                 'Referrer-Policy': 'origin-when-cross-origin',
                 'Permissions-Policy': 'geolocation=(self), microphone=()',
-                'Cache-Control': 'public, max-age=31536000, immutable',
-                'Expires': 'Wed, 21 Oct 2029 07:28:00 GMT',
-                'Date': 'redacted',
+                'Cache-Control': 'public, max-age=86400',
+                'Expires': r.d.Expires,
                 'Content-Range': r.d.content_range,
                 'Accept-Ranges': 'bytes',
                 'Content-Length': r.d.content_length,
@@ -513,7 +517,7 @@ class WebApp(object):
     async def handle_connection_error(app, request, err):
         try:
             await app.log("Request handling error: %s" % err)
-            await request.cancel()
+            return
         except Exception as e:
             p(e)
 

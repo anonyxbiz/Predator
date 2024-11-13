@@ -50,6 +50,55 @@ class Error(Exception):
     def __str__(app) -> str:
         return app.message
 
+class Pack:
+    @classmethod
+    async def set(app, **kwargs):
+        app = app()
+        app.__dict__.update(kwargs)
+        return app
+
+class Log:
+    known_exceps = [
+        "transport",
+        "Task",
+        "Cannot write",
+        "closing transport",
+        "Cannot write to closing transport"
+    ]
+
+    embody = None
+    @classmethod
+    async def out(app, e, **kwargs):
+        try:
+            app = app()
+            app.__dict__.update(kwargs)
+            if app.embody is None:
+                app.embody = await Pack.set()
+
+            app.embody.e = str(e).strip()
+            app.embody.fname = inspect_stack()[1].function
+            app.embody.log = False
+
+            for a in app.known_exceps:
+                if a in app.embody.e:
+                    app.embody.log = False
+                    break
+                else:
+                    app.embody.log = True
+
+            if app.embody.log:
+                app.embody.e = "[%s]:: %s ::" % (
+                    app.embody.fname,
+                    app.embody.e
+                )
+                p("$: %s" % (app.embody.e))
+
+        except Exception as e:
+            p(e)
+        finally:
+            del app.embody
+            return app
+
 class Stream_Response:
     @classmethod
     async def init(app, r, **kwargs):
@@ -83,22 +132,23 @@ class Stream_Response:
         })
         
     async def write(app, content):
-        if not app.r.response.prepared:
-            await app.r.response.prepare(app.r.request)
-    
-        if isinstance(content, (str,)):
-            content = content.encode()
-            
         try:
-            await app.r.response.write(content)
-        except Exception as e:
-            p(e)
-            raise Error(e)
+            if not app.r.response.prepared:
+                await app.r.response.prepare(app.r.request)
+        
+            if isinstance(content, (str,)):
+                content = content.encode()
 
+            await app.r.response.write(content)
+        except (AttributeError) as e:
+            await Log.out(e)
+        except Exception as e:
+            await Log.out(e)
+            
     async def finish(app, content=None):
-        if content is not None:
-            await app.write(content)
         try:
+            if content is not None:
+                await app.write(content)
             await app.r.response.write_eof()
         except Exception as e:
             p(e)
@@ -180,7 +230,7 @@ class Static:
             if not path.exists(r.file):
                 raise Error("Not found")
                 
-            r.d = MyDict()
+            r.d = await Pack.set()
 
             r.d.fname = r.file
             r.d.filename = path.basename(r.d.fname)
@@ -235,7 +285,7 @@ class Static:
         r.arg = arg
 
         r = await app.initialize_response(r, **config)
-        
+
         async with iopen(r.d.fname, "rb") as f:
             if not r.response.prepared:
                 await r.response.prepare(r.request)
@@ -243,38 +293,41 @@ class Static:
             while True:
                 try:
                     await f.seek(r.d.start)
+
                     if not (chunk := await f.read(r.serve_chunk or 1024)):
                         break
-                    
+
                     r.d.start += len(chunk)
                     await r.response.write(chunk)
                 except Exception as e:
-                    if not "Cannot write to closing transport" in str(e):
-                        p(e)
-                    return r
-            
-            await r.response.write_eof()
-            
+                    await Log.out(e)
+                    break
+            try:
+                await r.response.write_eof()
+            except Exception as e:
+                await Log.out(e)
+
         return r
 
-class WebApp(object):
+class WebApp:
     @classmethod
     async def init(app, **kwargs):
         app = app()
         app.__dict__.update(kwargs)
-        app.Static = await Static().init()
         app.web = web
         app.response_headers = await Stuff.headers()
         app.dev = 1
-        m = await MyDict().init(methods = {})
+
+        m = await Pack.set(methods = {})
         app.methods = m.methods
         app.ddos_protection = 0
         app.throttle_at_ram = 0.20
         app.secure_host = 0
+        app.requests_count = 0
 
         if "collect_garbage" in app.__dict__:
             garbage = await Garbage.init()
-            await garbage.collect(app.__dict__.get("garbage_collection_frequency", 30))
+            await garbage.collect(app.__dict__.get("garbage_collection_frequency", 60))
 
         return app
         
@@ -298,45 +351,22 @@ class WebApp(object):
         app.methods[route_name] = data
         return func
 
-    async def log(app, e):
-        e = str(e)
-        async def _func():
-            ins = MyDict()
-            known_exceps = ["transport", "Task"]
-            ins.fname=inspect_stack()[3].function
-            ins.e, ins.log = str(e), 0
-
-            for a in known_exceps:
-                if a in ins.e:
-                    pass
-                else:
-                    ins.log = 1
-                    break
-
-            if ins.log:
-                str_ = f"[{ins.fname}]:: {ins.e}"
-            
-                if len(str_) <= 100:
-                    pass
-                else:
-                    str_ = str_[:100]
-                p(str_)
-                
-        await _func()
-
     async def gen_request(app, incoming_request):
         if incoming_request is not None:
             async def const_r():
-                request = MyDict()
+                request = await Pack.set()
                 
-                def get_system_resources():
+                async def get_system_resources():
                     ins = MyDict()
                     ins.memory_info = virtual_memory()
                     ins.aval_gb = float(f"{ins.memory_info.available / (1024 ** 3):.2f}")
                     return ins
                     
-                async def _func():
+                async def request_processor():
+                    app.requests_count += 1
                     request.request = incoming_request
+                    request.json = request.request.json
+
                     request.response = None
                     request.tail = request.request.path
                     request.params = {a:b for a,b in request.request.query.items()}
@@ -348,48 +378,53 @@ class WebApp(object):
                     request.blocked = 0
                     
                     if not "_" in request.route_name: request.route_name = "_"
+
                     request.full_tail = request.route_name + "?" + "&&".join([f"{a}={b}" for a, b in request.params.items()])
-                    
-                    p(f"[{request.ip or '127.0.0.1'}] :{request.method}: @{request.tail}")
+
+                    await Log.out("(%s) [%s] :%s: @%s" % (
+                        app.requests_count,
+                        request.ip or '127.0.0.1',
+                        request.method,
+                        request.tail
+                    ))
 
                     if app.secure_host and not request.headers.get("Host", "0").startswith(app.host):
                         request.blocked = "Unidentified Client"
 
                     if app.ddos_protection:
-                        ins = await to_thread(get_system_resources,)
+                        ins = await get_system_resources()
                         if ins.aval_gb <= app.throttle_at_ram:
                             request.blocked = f"Our server is currently busy, remaining resources are: {ins.aval_gb} GB, try again later when resources are available."
                             
                     return request
                     
-                return await _func()
+                return await request_processor()
                 
             return await const_r()
         
-    async def router(app, incoming_request):
+    async def router(app, incoming_request, request=None):
         try:
             request = await app.gen_request(incoming_request)
-            if request.blocked: raise Error(request.blocked)
-            
+            if request.blocked:
+                raise Error(request.blocked)
+
             if (a := "before_middleware") in app.methods:
                 if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
                 
-                if (_ := await app.methods[a]["func"](request)) is not None:
-                    pass
-
+                await app.methods[a]["func"](request)
+    
             if request.response is None and request.route_name in app.methods:
                 if request.method not in app.methods[request.route_name]["methods"]:
                     raise Error("Method not allowed")
                 
-                if (_ := await app.methods[request.route_name]["func"](request)) is not None:
-                    pass
-                
+                await app.methods[request.route_name]["func"](request)
+
             if request.response is None:
                 if (a := "not_found_method") in app.methods or (a := "handle_all") in app.methods:
                     if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
                 
-                    if (_ := await app.methods[a]["func"](request)) is not None:
-                        pass
+                    await app.methods[a]["func"](request)
+
                     if request.response is None:
                         raise Error("Not found")
                         
@@ -397,8 +432,7 @@ class WebApp(object):
                     raise Error("Not found")
             
             if (a := "after_middleware") in app.methods:
-                if (_ := await app.methods[a]["func"](request)) is not None:
-                    pass
+                await app.methods[a]["func"](request)
                     
         except Error as e:
             try:
@@ -408,13 +442,13 @@ class WebApp(object):
                 await request.stream.write(str(e))
                 await request.stream.finish('"}')
             except Exception as e:
-                await app.log(e)
-                return None, None
+                await Log.out(e)
+                return None
 
         except KeyboardInterrupt:
             pass
         except Exception as e:
-            await app.log(e)
+            await Log.out(e)
             if app.dev:
                 msg = str(e)
             else:
@@ -426,8 +460,8 @@ class WebApp(object):
             await request.stream.write('{"detail": "')
             await request.stream.write(msg)
             await request.stream.finish('"}')
-
-        return await app.finalize_request(request)
+        finally:
+            return await app.finalize_request(request)
 
     async def finalize_request(app, request):
         try:
@@ -436,89 +470,86 @@ class WebApp(object):
 
                 await request.stream.json()
                 await request.stream.write('{"detail": "')
-                await request.stream.write('Response not set.')
+                await request.stream.write('Internal Server Error.')
                 await request.stream.finish('"}')
                 
             request.response.headers.update(app.response_headers)
         except Exception as e:
-            await app.log(e)
-        
+            await Log.out(e)
+        finally:
+            return request
+
+    async def handle(app, request, r=None, response=None):
         try:
-            return request, request.response
+            r = await app.router(request)
         except Exception as e:
-            await app.log(e)
-    
-    async def handle(app, request):
-        """Request handler from aiohttp web.server"""
-        try:
-            r, response = await app.router(request)
-            
-            if response is None:
-                del request, response, r
-                return
-            else:
-                del r
+            await Log.out(e)
+        finally:
+            try:
+                if r is not None:
+                    response = r.response
                 return response
+            except Exception as e:
+                await Log.out(e)
 
-        except AttributeError:
-            del request
-            return
-        except (ConnectionResetError, OSError, AttributeError, TypeError) as e:
-            del request
-            return
-        except ClientConnectionError as e:
-            del request
-            return
-        except Error as e:
-            del request
-            return
-        except Exception as e:
-            p(e)
-            del request
-            return
+    async def config_ssl(app):
+        def setup_ssl(system = None):
+            try:
+                if not path.exists(f"{app.app_config.certfile}") or not path.exists(f"{app.app_config.keyfile}"):
+                    from os import system
+                    system(f'openssl req -x509 -newkey rsa:2048 -keyout {app.app_config.keyfile} -out {app.app_config.certfile} -days 365 -nodes -subj "/CN={app.app_config.host}"')
+                
+                from ssl import create_default_context, Purpose 
+                app.app_config.ssl_context = create_default_context(Purpose.CLIENT_AUTH)
+                app.app_config.ssl_context.load_cert_chain(certfile=app.app_config.certfile, keyfile=app.app_config.keyfile)
+            except Exception as e:
+                p(e)
+            finally:
+                del system
+                return
 
-    async def handle_connection_error(app, request, err):
-        try:
-            await app.log("Request handling error: %s" % err)
-            return
-        except Exception as e:
-            p(e)
+        if (ssl_data := app.app_config.__dict__.get("ssl")) is not None:
+            app.web_protocol = "https"
+            app.app_config.certfile, app.app_config.keyfile = ssl_data["certfile"], ssl_data["keyfile"]
 
-    def setup_ssl(app):
-        if not path.exists(f"{app.app_config.certfile}") or not path.exists(f"{app.app_config.keyfile}"):
-            from os import system
-            system(f'openssl req -x509 -newkey rsa:2048 -keyout {app.app_config.keyfile} -out {app.app_config.certfile} -days 365 -nodes -subj "/CN={app.app_config.host}"')
-        
-        from ssl import create_default_context, Purpose 
-        app.app_config.ssl_context = create_default_context(Purpose.CLIENT_AUTH)
-        app.app_config.ssl_context.load_cert_chain(certfile=app.app_config.certfile, keyfile=app.app_config.keyfile)
-        
-    async def run(app, app_config: MyDict):
+            setup_ssl()
+            app.app_config.site = web.TCPSite(app.app_config.runner, app.app_config.host, app.app_config.port, ssl_context=app.app_config.ssl_context)
+        else:
+            app.web_protocol = "http"
+            app.app_config.site = web.TCPSite(app.app_config.runner, app.app_config.host, app.app_config.port)
+
+    async def run(app, app_config):
         app.app_config = app_config
         server = web.Server(app.handle)
         server.client_max_size = None
         app.app_config.runner = web.ServerRunner(server)
             
         await app.app_config.runner.setup()
-        
-        if not (ssl_data := app.app_config.__dict__.get("ssl", None)):
-            app.app_config.site = web.TCPSite(app.app_config.runner, app.app_config.host, app.app_config.port)
-        else:
-            app.app_config.certfile, app.app_config.keyfile = ssl_data["certfile"], ssl_data["keyfile"]
-            
-            await to_thread(app.setup_ssl)
-            app.app_config.site = web.TCPSite(app.app_config.runner, app.app_config.host, app.app_config.port, ssl_context=app.app_config.ssl_context)
-            
+        await app.config_ssl()
+
         await app.app_config.site.start()
-        
-        if ssl_data: prot = "https"
-        else: prot = "http"
-        await app.log(f"=== Predator Is Serving {app.app_config.host} On {prot}://{app.app_config.host}:{app.app_config.port} ===")
+
+        await Log.out(
+            "=== Predator Is Serving %s On %s://%s:%s ===" % (
+                app.app_config.host,
+                app.web_protocol,
+                app.app_config.host,
+                app.app_config.port
+            )
+        )
         
         await sleep(100*3600)
         
-    def runner(app, app_config: MyDict):
+    def runner(app, app_config):
         try:
+            if not isinstance(app_config, (MyDict,)):
+                if isinstance(app_config, (dict,)):
+                    config = MyDict()
+                    config.__dict__.update(app_config)
+                    app_config = config
+                else:
+                    raise Error("app_config must be a valid dict")
+
             for a in ["host", "port"]:
                 if not app_config.__dict__.get(a, None):
                     raise Error(f"{a} is required.")
@@ -528,9 +559,9 @@ class WebApp(object):
         except (ConnectionResetError, OSError, AttributeError, TypeError):
             pass
         except Exception as e:
-            p("Exception catched: %s" % str(e))
+            p("Exception caught: %s" % str(e))
         except BaseException as e:
-            p("Base Exception catched: %s" % str(e))
+            p("Base Exception caught: %s" % str(e))
             
 if __name__ == '__main__':
     config = run(MyDict(host="0.0.0.0", port=8000, ssl={"certfile": "cert.pem", "keyfile": "key.pem"}))

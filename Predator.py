@@ -409,6 +409,7 @@ class WebApp(object):
                 await request.stream.finish('"}')
             except Exception as e:
                 await app.log(e)
+                return None, None
 
         except KeyboardInterrupt:
             pass

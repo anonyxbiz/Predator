@@ -25,32 +25,22 @@ class MyDict:
     async def get(app):
         return app.__dict__
 
-class Stuff(object):
-    app = None
+class Stuff:
     @classmethod
-    async def init(cls, **kwargs):
-        app = cls()
-        return app
-    
     async def headers(app, **kwargs):
-        response_headers = {
+        app = app()
+        app.response_headers = {
             'Server': 'Predator',
             'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
             'X-Frame-Options': 'SAMEORIGIN',
             'X-XSS-Protection': '1; mode=block',
-            'Referrer-Policy': 'origin-when-cross-origin',
-            'Permissions-Policy': 'geolocation=(self), microphone=()',
-            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-            'Date': 'redacted',
+            'Referrer-Policy': 'origin-when-cross-origin'
         }
         
-        async def func():
-            for a, b in kwargs.items():
-                response_headers[a] = b
-        
         if kwargs:
-            await func()
-        return response_headers
+            app.response_headers.update(**kwargs)
+        
+        return app.response_headers
 
 class Error(Exception):
     def __init__(app, message=None):
@@ -60,27 +50,15 @@ class Error(Exception):
     def __str__(app) -> str:
         return app.message
 
-class Stream_Response(object):
+class Stream_Response:
     @classmethod
     async def init(app, r, **kwargs):
         app = app()
         app.r = r
-        app.response_headers = {
-            'Server': 'Predator',
-            'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
-            'X-Frame-Options': 'SAMEORIGIN',
-            'X-XSS-Protection': '1; mode=block',
-            'Referrer-Policy': 'origin-when-cross-origin',
-            'Permissions-Policy': 'geolocation=(self), microphone=()',
-            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-            'Date': 'redacted',
-        }
-        
-        app.response_headers.update(kwargs.get("headers", {}))
 
         app.r.response = web.StreamResponse(
             status=kwargs.get("status", 200),
-            headers=app.response_headers
+            headers=await Stuff.headers(**kwargs.get("headers", {}))
         )
         return app
     
@@ -108,20 +86,8 @@ class Stream_Response(object):
         if not app.r.response.prepared:
             await app.r.response.prepare(app.r.request)
     
-        try:
-            if 0:
-                if await to_thread(isinstance, content, (str,)):
-                    content = content.encode()
-            else:
-                if isinstance(content, (str,)):
-                    content = content.encode()
-
-        except UnicodeError:
-            pass
-        except TypeError:
-            pass
-        except Exception as e:
-            p(e)
+        if isinstance(content, (str,)):
+            content = content.encode()
             
         try:
             await app.r.response.write(content)
@@ -136,8 +102,9 @@ class Stream_Response(object):
             await app.r.response.write_eof()
         except Exception as e:
             p(e)
+            raise Error(e)
 
-class Garbage(object):
+class Garbage:
     jobs = []
     @classmethod
     async def init(app, **kwargs):
@@ -200,7 +167,7 @@ class Static:
         app.__dict__.update(kwargs)
         return app
         
-    async def initialize_response(app, r):
+    async def initialize_response(app, r, **kwargs):
         async def _func():
             if not (file := r.override_file):
                 if not (file := r.params.get(r.arg)):
@@ -233,31 +200,18 @@ class Static:
             r.d.content_range = 'bytes %s-%s/%s' % (r.d.start, r.d.end, r.d.file_size) if r.headers.get("Range", None) else ''
                 
             r.d.content_length = str(r.d.end - r.d.start + 1)
-            
-            if not r.d.content_type:
+            if not r.d.content_type or kwargs.get("download_file"):
                 r.d.content_type = "application/octet-stream"
                 r.d.content_disposition = 'attachment; filename="%s"' % (r.d.filename)
-                    
-            if range_header is not None:
-                r.d.status = 206
-            else:
-                r.d.status = 200
-                
+            
+            r.d.status = 206 if range_header is not None else 200
             expires_date = dt.utcnow() + timedelta(hours=24)
-            expires_str = expires_date.strftime('%a, %d %b %Y %H:%M:%S GMT')
-            r.d.Expires = expires_str
-                        
-        # await to_thread(_func)
+            r.d.Expires = expires_date.strftime('%a, %d %b %Y %H:%M:%S GMT')
+
         await _func()
         
         if r.d:
             headers = {
-                'Server': 'Predator',
-                'Strict-Transport-Security': 'max-age=63072000; includeSubdomains',
-                'X-Frame-Options': 'SAMEORIGIN',
-                'X-XSS-Protection': '1; mode=block',
-                'Referrer-Policy': 'origin-when-cross-origin',
-                'Permissions-Policy': 'geolocation=(self), microphone=()',
                 'Cache-Control': 'public, max-age=86400',
                 'Expires': r.d.Expires,
                 'Content-Range': r.d.content_range,
@@ -266,22 +220,21 @@ class Static:
                 'Content-Type': r.d.content_type,
                 'Content-Disposition': r.d.content_disposition
             }
-            
             r.response = web.StreamResponse(
                 status=r.d.status,
-                headers=headers
+                headers=await Stuff.headers(**headers)
             )
         else:
             raise Error("Something went wrong")
         
         return r
         
-    async def static_file_server(app, r, override_file=0, serve_chunk=0, arg="serve"):
+    async def static_file_server(app, r, override_file=0, serve_chunk=0, arg="serve", config={}):
         r.override_file = override_file
         r.serve_chunk = serve_chunk
         r.arg = arg
 
-        r = await app.initialize_response(r)
+        r = await app.initialize_response(r, **config)
         
         async with iopen(r.d.fname, "rb") as f:
             if not r.response.prepared:
@@ -310,9 +263,8 @@ class WebApp(object):
         app = app()
         app.__dict__.update(kwargs)
         app.Static = await Static().init()
-        app.Stuff = await Stuff.init()
         app.web = web
-        app.response_headers = await app.Stuff.headers()
+        app.response_headers = await Stuff.headers()
         app.dev = 1
         m = await MyDict().init(methods = {})
         app.methods = m.methods
@@ -405,7 +357,6 @@ class WebApp(object):
 
                     if app.ddos_protection:
                         ins = await to_thread(get_system_resources,)
-                        # ins = get_system_resources()
                         if ins.aval_gb <= app.throttle_at_ram:
                             request.blocked = f"Our server is currently busy, remaining resources are: {ins.aval_gb} GB, try again later when resources are available."
                             
@@ -492,28 +443,39 @@ class WebApp(object):
             await app.log(e)
         
         try:
-            return request.response
+            return request, request.response
         except Exception as e:
             await app.log(e)
     
     async def handle(app, request):
         """Request handler from aiohttp web.server"""
         try:
-            r = await app.router(request)
+            r, response = await app.router(request)
             
-            if r is None:
-                raise Error("Response was None")
-            return r
-            
+            if response is None:
+                del request, response, r
+                return
+            else:
+                del r
+                return response
+
+        except AttributeError:
+            del request
+            return
         except (ConnectionResetError, OSError, AttributeError, TypeError) as e:
-            return await app.handle_connection_error(request, e)
+            del request
+            return
         except ClientConnectionError as e:
-            return await app.handle_connection_error(request, e)
+            del request
+            return
         except Error as e:
-            return await app.handle_connection_error(request, e)
+            del request
+            return
         except Exception as e:
-            return await app.handle_connection_error(request, e)
-            
+            p(e)
+            del request
+            return
+
     async def handle_connection_error(app, request, err):
         try:
             await app.log("Request handling error: %s" % err)

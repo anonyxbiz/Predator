@@ -140,8 +140,6 @@ class Stream_Response:
                 content = content.encode()
 
             await app.r.response.write(content)
-        except (AttributeError) as e:
-            await Log.out(e)
         except Exception as e:
             await Log.out(e)
             
@@ -151,8 +149,7 @@ class Stream_Response:
                 await app.write(content)
             await app.r.response.write_eof()
         except Exception as e:
-            p(e)
-            raise Error(e)
+            await Log.out(e)
 
 class Garbage:
     jobs = []

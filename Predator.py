@@ -361,19 +361,16 @@ class WebApp:
         app.response_headers = await Stuff.headers()
         app.dev = 1
 
-        m = await Pack.set(methods = {})
-        app.methods = m.methods
+        app.routes = await Pack.set()
+        app.methods = {}
+
         app.ddos_protection = 0
         app.throttle_at_ram = 0.20
         app.secure_host = 0
         app.requests_count = 0
 
-        if "collect_garbage" in app.__dict__:
-            garbage = await Garbage.init()
-            await garbage.collect(app.__dict__.get("garbage_collection_frequency", 60))
-
         return app
-        
+
     def route(app, func: Callable):
         route_name = func.__name__
         signature = sig(func)
@@ -384,13 +381,13 @@ class WebApp:
         methods = methods_param.default if methods_param and methods_param.default is not Parameter.empty else ["GET", "POST", "OPTIONS", "PUT", "PATCH", "HEAD", "DELETE"]
         
         if alt_route: route_name = alt_route.default.replace("/", "_")
-        
+
         data = {
             'func': func,
             'params': params,
             'methods': methods,
         }
-        
+
         app.methods[route_name] = data
         return func
 
@@ -466,93 +463,59 @@ class WebApp:
         await r.response.write_eof()
 
     async def gen_request(app, incoming_request):
-        if incoming_request is not None:
-            async def const_r():
-                async def request_processor():
-                    r = await Pack.set()
-                    r.request = incoming_request
-                    r.json = r.request.json
-                    r.json_response = app.json_response
-                    r.Stream = Stream
+        r = await Pack.set()
+        r.request = incoming_request
+        r.json = r.request.json
+        r.json_response = app.json_response
+        r.Stream = Stream
+        r.response = None
+        r.tail = r.request.path
+        r.params = r.request.query
+        r.headers = r.request.headers
 
-                    r.response = None
-                    r.tail = r.request.path
-                    r.params = r.request.query
-                    r.headers = r.request.headers
+        r.method = r.request.method
+        r.ip = r.request.remote
+        r.route_name = r.tail
 
-                    r.method = r.request.method
-                    r.ip = r.request.remote
+        return r
 
-                    r.route_name = "_".join(r.tail.split("/"))
-                    r.blocked = False
-
-                    if not "_" in r.route_name: r.route_name = "_"
-                    return r
-                    
-                return await request_processor()
-                
-            return await const_r()
-        
     async def router(app, incoming_request, request=None):
         try:
-            request = await app.gen_request(incoming_request)
-            if request.blocked:
-                raise Error(request.blocked)
+            r = await app.gen_request(incoming_request)
 
-            if (a := "before_middleware") in app.methods:
-                if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
+            if r.response is None and "before_middleware" in app.routes.__dict__:
+                route = app.routes.__dict__["before_middleware"]
+                await route(r)
+
+            if r.route_name in app.routes.__dict__:
+                route = app.routes.__dict__[r.route_name]
+                await route(r)
+
+            if r.response is None and "handle_all" in app.routes.__dict__:
+                route = app.routes.__dict__["handle_all"]
+                await route(r)
+
+            if r.response is None:
+                r.response = web.Response(text=r.ip)
+
+            if "after_middleware" in app.routes.__dict__:
+                route = app.routes.__dict__["after_middleware"]
+                await route(r)
                 
-                await app.methods[a]["func"](request)
-    
-            if request.response is None and request.route_name in app.methods:
-                if request.method not in app.methods[request.route_name]["methods"]:
-                    raise Error("Method not allowed")
-                
-                await app.methods[request.route_name]["func"](request)
+            return await app.finalize(r)
+        except (CancelledError, Error, AttributeError, Exception) as e:
+            p("Exception: %s" % str(e))
+            if isinstance(e, (Error,)):
+                r.response = web.Response(text=str(e))
+            else:
+                r.response = web.Response(status=500, text="Server got itself in trouble")
 
-            if request.response is None:
-                if (a := "not_found_method") in app.methods or (a := "handle_all") in app.methods:
-                    if request.method not in app.methods[a]["methods"]: raise Error("Method not allowed")
-                
-                    await app.methods[a]["func"](request)
+            return await app.finalize(r)
 
-                    if request.response is None:
-                        raise Error("Not found")
-                        
-                else:
-                    raise Error("Not found")
-            
-            if (a := "after_middleware") in app.methods:
-                await app.methods[a]["func"](request)
-        except Error as e:
-            try:
-                response = web.Response(text=str(e))
-            except Exception as e:
-                p(e)
-                return None
-        except KeyboardInterrupt:
-            pass
-        except Exception as e:
-            p(e)
-        return await app.finalize_request(request)
-
-    async def finalize_request(app, request):
-        try:
-            request.response.headers.update(app.response_headers)
-        except Exception as e:
-            p(e)
-
-        return request
-
-    async def handle(app, request, r=None, response=None):
-        try:
-            r = await app.router(request)
-            if r is not None:
-                response = r.response
-                return response
-        except Exception as e:
-            p(e)
-            del request, r, response
+    async def finalize(app, r):
+        if "response" in r.__dict__:
+            r.response.headers.update(app.response_headers)
+            return r.response
 
     async def config_ssl(app):
         def setup_ssl(system = None):
@@ -581,8 +544,20 @@ class WebApp:
             app.app_config.site = web.TCPSite(app.app_config.runner, app.app_config.host, app.app_config.port)
 
     async def run(app, app_config):
+        if not isinstance(app_config, (MyDict,)):
+            if isinstance(app_config, (dict,)):
+                config = MyDict()
+                config.__dict__.update(app_config)
+                app_config = config
+            else:
+                raise Error("app_config must be a valid dict")
+
+        for a in ["host", "port"]:
+            if not app_config.__dict__.get(a, None):
+                raise Error(f"{a} is required.")
+
         app.app_config = app_config
-        server = web.Server(app.handle)
+        server = web.Server(app.router)
         server.client_max_size = None
         app.app_config.runner = web.ServerRunner(server)
             
@@ -604,18 +579,6 @@ class WebApp:
         
     def runner(app, app_config):
         try:
-            if not isinstance(app_config, (MyDict,)):
-                if isinstance(app_config, (dict,)):
-                    config = MyDict()
-                    config.__dict__.update(app_config)
-                    app_config = config
-                else:
-                    raise Error("app_config must be a valid dict")
-
-            for a in ["host", "port"]:
-                if not app_config.__dict__.get(a, None):
-                    raise Error(f"{a} is required.")
-                    
             run(app.run(app_config))
         except KeyboardInterrupt: exit()
         except (ConnectionResetError, OSError, AttributeError, TypeError):

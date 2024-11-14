@@ -12,7 +12,6 @@ from aiohttp import web, ClientConnectionError
 from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
 from base64 import b64encode, b64decode
-from gc import collect
 from datetime import datetime as dt, timedelta
 
 p = print
@@ -71,6 +70,9 @@ class Log:
     async def out(app, e, **kwargs):
         try:
             app = app()
+            p(e)
+            return app
+
             app.__dict__.update(kwargs)
             if app.embody is None:
                 app.embody = await Pack.set()
@@ -93,11 +95,11 @@ class Log:
                 )
                 p("$: %s" % (app.embody.e))
 
-        except Exception as e:
-            p(e)
-        finally:
             del app.embody
             return app
+
+        except Exception as e:
+            print(e)
 
 class Stream_Response:
     @classmethod
@@ -150,31 +152,6 @@ class Stream_Response:
             await app.r.response.write_eof()
         except Exception as e:
             await Log.out(e)
-
-class Garbage:
-    jobs = []
-    @classmethod
-    async def init(app, **kwargs):
-        app = app()
-        return app
-
-    async def cleaner(app, garbage_collection_frequency):
-        while True:
-            try:
-                await to_thread(collect,)
-                await sleep(garbage_collection_frequency)
-            except Exception as e:
-                p(e)
-                break
-            
-    async def collect(app, garbage_collection_frequency=30, workers=None):
-        if not workers:
-            workers = [app.cleaner]
-
-        for worker in workers:
-            app.jobs.append(
-                create_task(worker(garbage_collection_frequency))
-            )
                 
 class Safe:
     def __init__(app, key, salt="Kim Jong Un"):
@@ -306,6 +283,75 @@ class Static:
 
         return r
 
+class Stream:
+    @classmethod
+    async def init(app, r, **kwargs):
+        app = app()
+        app.r = r
+        # app.__dict__.update(**kwargs)
+        app.status = 200 if (sts := kwargs.get("status")) is None else sts
+
+        app.headers = {
+            'Server': 'Predator',
+            'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
+            'X-Frame-Options': 'SAMEORIGIN',
+            'X-XSS-Protection': '1; mode=block',
+            'Referrer-Policy': 'origin-when-cross-origin'
+        }
+        app.headers.update(kwargs.get("headers", {}))
+
+        return app
+    
+    async def json(app):
+        app.headers.update({
+            'Content-Range': '',
+            'Accept-Ranges': 'bytes',
+            'Content-Type': "application/json",
+        })
+        return app
+        
+    async def raw(app):
+        app.headers.update({
+            'Content-Range': '',
+            'Accept-Ranges': 'bytes',
+        })
+        return app
+
+    async def text(app):
+        app.headers.update({
+            'Content-Range': '',
+            'Accept-Ranges': 'bytes',
+            'Content-Type': "text/plain",
+        })
+        return app
+
+    async def write(app, content):
+        try:
+            if app.r.response is None:
+                app.r.response = web.StreamResponse(
+                    status=app.status,
+                    reason="OK",
+                    headers=app.headers
+            )
+
+            if not app.r.response.prepared:
+                await app.r.response.prepare(app.r.request)
+        
+            if isinstance(content, (str,)):
+                content = content.encode()
+
+            await app.r.response.write(content)
+        except Exception as e:
+            await Log.out(e)
+            
+    async def finish(app, content=None):
+        try:
+            if content is not None:
+                await app.write(content)
+            await app.r.response.write_eof()
+        except Exception as e:
+            await Log.out(e)
+
 class WebApp:
     @classmethod
     async def init(app, **kwargs):
@@ -348,52 +394,100 @@ class WebApp:
         app.methods[route_name] = data
         return func
 
+    async def json_response(app, r, _dict_={}):
+        r.response = web.json_response(_dict_)
+        return
+
+    async def serve_file(app, r, file_path, chunk_size=1, response_headers={}):
+        try:
+            response_headers.update({
+                'Server': 'Predator',
+                'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
+                'X-Frame-Options': 'SAMEORIGIN',
+                'X-XSS-Protection': '1; mode=block',
+                'Referrer-Policy': 'origin-when-cross-origin'
+            })
+
+            filename = path.basename(file_path)
+            file_size = path.getsize(file_path)
+    
+            content_type, _ = guess_type(file_path)
+            content_disposition = 'inline; filename="%s"' % (filename)
+
+            if (range_header := r.headers.get('Range', r.params.get('Range'))):
+                start, end = (byte_range := range_header.strip().split('=')[1]).split('-')
+                
+                start = int(start)
+                end = int(end) if end else file_size - 1
+            else:
+                start, end = 0, file_size - 1
+
+            content_range = 'bytes %s-%s/%s' % (start, end, file_size) if r.headers.get("Range") else ''
+            content_length = str(end - start + 1)
+
+            if not content_type:
+                content_type = "application/octet-stream"
+                content_disposition = 'attachment; filename="%s"' % (filename)
+            status_code = 206 if range_header is not None else 200
+
+            response_headers.update({
+                'Content-Range': content_range,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': content_length,
+                'Content-Type': content_type,
+                'Content-Disposition': content_disposition
+            })
+
+            r.response = web.StreamResponse(
+                    status=status_code,
+                    reason="OK",
+                    headers=response_headers
+            )
+            await r.response.prepare(r.request)
+
+            async with iopen(file_path, "rb") as f:
+                await f.seek(start)
+                while True:
+                    try:
+                        if not (chunk := await f.read(chunk_size)):
+                            return None
+                        else:
+                            await r.response.write(chunk)
+                    except Exception as e:
+                        if "transport" not in str(e).strip():
+                            p(e)
+                        return None
+
+        except Exception as e:
+            p("error: %s" % str(e))
+
+            return None
+
+        await r.response.write_eof()
+
     async def gen_request(app, incoming_request):
         if incoming_request is not None:
             async def const_r():
-                request = await Pack.set()
-                
-                async def get_system_resources():
-                    ins = MyDict()
-                    ins.memory_info = virtual_memory()
-                    ins.aval_gb = float(f"{ins.memory_info.available / (1024 ** 3):.2f}")
-                    return ins
-                    
                 async def request_processor():
-                    app.requests_count += 1
-                    request.request = incoming_request
-                    request.json = request.request.json
+                    r = await Pack.set()
+                    r.request = incoming_request
+                    r.json = r.request.json
+                    r.json_response = app.json_response
+                    r.Stream = Stream
 
-                    request.response = None
-                    request.tail = request.request.path
-                    request.params = {a:b for a,b in request.request.query.items()}
-                    request.headers = {a:b for a,b in request.request.headers.items()}
-                    request.method = request.request.method
-                    request.ip = incoming_request.remote
-                    
-                    request.route_name = "_".join(request.tail.split("/"))
-                    request.blocked = 0
-                    
-                    if not "_" in request.route_name: request.route_name = "_"
+                    r.response = None
+                    r.tail = r.request.path
+                    r.params = r.request.query
+                    r.headers = r.request.headers
 
-                    request.full_tail = request.route_name + "?" + "&&".join([f"{a}={b}" for a, b in request.params.items()])
+                    r.method = r.request.method
+                    r.ip = r.request.remote
 
-                    await Log.out("(%s) [%s] :%s: @%s" % (
-                        app.requests_count,
-                        request.ip or '127.0.0.1',
-                        request.method,
-                        request.tail
-                    ))
+                    r.route_name = "_".join(r.tail.split("/"))
+                    r.blocked = False
 
-                    if app.secure_host and not request.headers.get("Host", "0").startswith(app.host):
-                        request.blocked = "Unidentified Client"
-
-                    if app.ddos_protection:
-                        ins = await get_system_resources()
-                        if ins.aval_gb <= app.throttle_at_ram:
-                            request.blocked = f"Our server is currently busy, remaining resources are: {ins.aval_gb} GB, try again later when resources are available."
-                            
-                    return request
+                    if not "_" in r.route_name: r.route_name = "_"
+                    return r
                     
                 return await request_processor()
                 
@@ -430,64 +524,35 @@ class WebApp:
             
             if (a := "after_middleware") in app.methods:
                 await app.methods[a]["func"](request)
-                    
         except Error as e:
             try:
-                request.stream = await Stream_Response.init(request, status=403)
-                await request.stream.json()
-                await request.stream.write('{"detail": "')
-                await request.stream.write(str(e))
-                await request.stream.finish('"}')
+                response = web.Response(text=str(e))
             except Exception as e:
-                await Log.out(e)
+                p(e)
                 return None
-
         except KeyboardInterrupt:
             pass
         except Exception as e:
-            await Log.out(e)
-            if app.dev:
-                msg = str(e)
-            else:
-                msg = "Unexpected 403"
-                
-            request.stream = await Stream_Response.init(request, status=403)
-            
-            await request.stream.json()
-            await request.stream.write('{"detail": "')
-            await request.stream.write(msg)
-            await request.stream.finish('"}')
-        finally:
-            return await app.finalize_request(request)
+            p(e)
+        return await app.finalize_request(request)
 
     async def finalize_request(app, request):
         try:
-            if request.response is None:
-                request.stream = await Stream_Response.init(request, status=500)
-
-                await request.stream.json()
-                await request.stream.write('{"detail": "')
-                await request.stream.write('Internal Server Error.')
-                await request.stream.finish('"}')
-                
             request.response.headers.update(app.response_headers)
         except Exception as e:
-            await Log.out(e)
-        finally:
-            return request
+            p(e)
+
+        return request
 
     async def handle(app, request, r=None, response=None):
         try:
             r = await app.router(request)
-        except Exception as e:
-            await Log.out(e)
-        finally:
-            try:
-                if r is not None:
-                    response = r.response
+            if r is not None:
+                response = r.response
                 return response
-            except Exception as e:
-                await Log.out(e)
+        except Exception as e:
+            p(e)
+            del request, r, response
 
     async def config_ssl(app):
         def setup_ssl(system = None):

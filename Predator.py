@@ -13,6 +13,7 @@ from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
 from base64 import b64encode, b64decode
 from datetime import datetime as dt, timedelta
+from json import loads, dumps
 
 p = print
 
@@ -20,7 +21,7 @@ class MyDict:
     async def init(app, **kwargs):
         app.__dict__.update(kwargs)
         return app
-        
+
     async def get(app):
         return app.__dict__
 
@@ -35,10 +36,10 @@ class Stuff:
             'X-XSS-Protection': '1; mode=block',
             'Referrer-Policy': 'origin-when-cross-origin'
         }
-        
+
         if kwargs:
             app.response_headers.update(**kwargs)
-        
+
         return app.response_headers
 
 class Error(Exception):
@@ -112,39 +113,39 @@ class Stream_Response:
             headers=await Stuff.headers(**kwargs.get("headers", {}))
         )
         return app
-    
+
     async def json(app):
         app.r.response.headers.update({
             'Content-Range': '',
             'Accept-Ranges': 'bytes',
             'Content-Type': "application/json",
         })
-        
+
     async def raw(app):
         app.r.response.headers.update({
             'Content-Range': '',
             'Accept-Ranges': 'bytes',
         })
-        
+
     async def text(app):
         app.r.response.headers.update({
             'Content-Range': '',
             'Accept-Ranges': 'bytes',
             'Content-Type': "text/plain",
         })
-        
+
     async def write(app, content):
         try:
             if not app.r.response.prepared:
                 await app.r.response.prepare(app.r.request)
-        
+
             if isinstance(content, (str,)):
                 content = content.encode()
 
             await app.r.response.write(content)
         except Exception as e:
             await Log.out(e)
-            
+
     async def finish(app, content=None):
         try:
             if content is not None:
@@ -152,22 +153,22 @@ class Stream_Response:
             await app.r.response.write_eof()
         except Exception as e:
             await Log.out(e)
-                
+
 class Safe:
     def __init__(app, key, salt="Kim Jong Un"):
         app.salt = str(salt)
         app.safe_key = str(key)
         app.key = None
-        
+
     def safe_tool_sync(app, og: MyDict):
         try:
             if not app.key: app.key = PBKDF2(app.safe_key.encode(), app.salt.encode(), dkLen=16)
-                
+
             cipher = AES.new(app.key, AES.MODE_EAX)
             if (data := og.__dict__.get("encrypt", 0)):
                 if not isinstance(data, (bytearray, bytes,)): data = data.encode()
                 ciphertext, tag = cipher.encrypt_and_digest(data)
-                
+
             elif (data := og.__dict__.get("decrypt", 0)):
                 try: data = data.replace(' ', '+')
                 except: pass
@@ -182,7 +183,7 @@ class Safe:
             return b64encode(cipher.nonce + tag + ciphertext)
         except Exception as e:
             raise Error(e)
-            
+
     async def safe_tool(app, og: MyDict):
         return await to_thread(app.safe_tool_sync, og)
 
@@ -190,50 +191,50 @@ class Static:
     async def init(app, **kwargs):
         app.__dict__.update(kwargs)
         return app
-        
+
     async def initialize_response(app, r, **kwargs):
         async def _func():
             if not (file := r.override_file):
                 if not (file := r.params.get(r.arg)):
                     raise Error("serve parameter is required.")
-                    
+
                 r.file = "./static/%s" % (file)
             else:
                 r.file = file
-                
+
             if not path.exists(r.file):
                 raise Error("Not found")
-                
+
             r.d = await Pack.set()
 
             r.d.fname = r.file
             r.d.filename = path.basename(r.d.fname)
             r.d.file_size = path.getsize(r.d.fname)
-                
+
             r.d.content_type, _ = guess_type(r.d.fname)
             r.d.content_disposition = 'inline; filename="%s"' % (r.d.filename)
-                
+
             if (range_header := r.headers.get('Range', r.params.get('Range', None))):
                 r.d.start, r.d.end = (byte_range := range_header.strip().split('=')[1]).split('-')
-                    
+
                 r.d.start = int(r.d.start)
                 r.d.end = int(r.d.end) if r.d.end else r.d.file_size - 1
             else:
                 r.d.start, r.d.end = 0, r.d.file_size - 1
 
             r.d.content_range = 'bytes %s-%s/%s' % (r.d.start, r.d.end, r.d.file_size) if r.headers.get("Range", None) else ''
-                
+
             r.d.content_length = str(r.d.end - r.d.start + 1)
             if not r.d.content_type or kwargs.get("download_file"):
                 r.d.content_type = "application/octet-stream"
                 r.d.content_disposition = 'attachment; filename="%s"' % (r.d.filename)
-            
+
             r.d.status = 206 if range_header is not None else 200
-            expires_date = dt.utcnow() + timedelta(hours=24)
-            r.d.Expires = expires_date.strftime('%a, %d %b %Y %H:%M:%S GMT')
+            # expires_date = dt.utcnow() + timedelta(hours=24)
+            # r.d.Expires = expires_date.strftime('%a, %d %b %Y %H:%M:%S GMT')
 
         await _func()
-        
+
         if r.d:
             headers = {
                 'Cache-Control': 'public, max-age=86400',
@@ -250,9 +251,9 @@ class Static:
             )
         else:
             raise Error("Something went wrong")
-        
+
         return r
-        
+
     async def static_file_server(app, r, override_file=0, serve_chunk=0, arg="serve", config={}):
         r.override_file = override_file
         r.serve_chunk = serve_chunk
@@ -301,7 +302,7 @@ class Stream:
         app.headers.update(kwargs.get("headers", {}))
 
         return app
-    
+
     async def json(app):
         app.headers.update({
             'Content-Range': '',
@@ -309,7 +310,7 @@ class Stream:
             'Content-Type': "application/json",
         })
         return app
-        
+
     async def raw(app):
         app.headers.update({
             'Content-Range': '',
@@ -336,14 +337,14 @@ class Stream:
 
             if not app.r.response.prepared:
                 await app.r.response.prepare(app.r.request)
-        
+
             if isinstance(content, (str,)):
                 content = content.encode()
 
             await app.r.response.write(content)
         except Exception as e:
             await Log.out(e)
-            
+
     async def finish(app, content=None):
         try:
             if content is not None:
@@ -379,7 +380,7 @@ class WebApp:
         methods_param = params.get("methods", None)
         alt_route = params.get("route", None)
         methods = methods_param.default if methods_param and methods_param.default is not Parameter.empty else ["GET", "POST", "OPTIONS", "PUT", "PATCH", "HEAD", "DELETE"]
-        
+
         if alt_route: route_name = alt_route.default.replace("/", "_")
 
         data = {
@@ -407,13 +408,13 @@ class WebApp:
 
             filename = path.basename(file_path)
             file_size = path.getsize(file_path)
-    
+
             content_type, _ = guess_type(file_path)
             content_disposition = 'inline; filename="%s"' % (filename)
 
             if (range_header := r.headers.get('Range', r.params.get('Range'))):
                 start, end = (byte_range := range_header.strip().split('=')[1]).split('-')
-                
+
                 start = int(start)
                 end = int(end) if end else file_size - 1
             else:
@@ -456,18 +457,37 @@ class WebApp:
                         return None
 
         except Exception as e:
-            p("error: %s" % str(e))
-
+            # p("error: %s" % str(e))
             return None
 
         await r.response.write_eof()
+
+    async def get_json(app, r, size=1024, body = b""):
+        while not r.content.at_eof():
+            try:
+                chunk = await r.content.read(size)
+                if not chunk:
+                    break
+                else:
+                    body += chunk
+            except (UnicodeError, Exception) as e:
+                raise Error("Something went wrong")
+                return
+        try:
+            body = body.decode("utf-8")
+            body = loads(body)
+        except (UnicodeError, Exception) as e:
+            raise Error("Something went wrong")
+            return
+
+        return body
 
     async def gen_request(app, incoming_request):
         r = await Pack.set()
         r.request = incoming_request
         r.json = r.request.json
-        r.json_response = app.json_response
-        r.Stream = Stream
+        r.content = r.request.content
+        
         r.response = None
         r.tail = r.request.path
         r.params = r.request.query
@@ -501,14 +521,14 @@ class WebApp:
             if "after_middleware" in app.routes.__dict__:
                 route = app.routes.__dict__["after_middleware"]
                 await route(r)
-                
+
             return await app.finalize(r)
         except (CancelledError, Error, AttributeError, Exception) as e:
-            p("Exception: %s" % str(e))
             if isinstance(e, (Error,)):
-                r.response = web.Response(text=str(e))
+                r.response = web.Response(status=403, text=str(e))
             else:
-                r.response = web.Response(status=500, text="Server got itself in trouble")
+                p("Exception: %s" % str(e))
+                r.response = web.Response(status=500, text="Something went wrong")
 
             return await app.finalize(r)
 
@@ -523,7 +543,7 @@ class WebApp:
                 if not path.exists(f"{app.app_config.certfile}") or not path.exists(f"{app.app_config.keyfile}"):
                     from os import system
                     system(f'openssl req -x509 -newkey rsa:2048 -keyout {app.app_config.keyfile} -out {app.app_config.certfile} -days 365 -nodes -subj "/CN={app.app_config.host}"')
-                
+
                 from ssl import create_default_context, Purpose 
                 app.app_config.ssl_context = create_default_context(Purpose.CLIENT_AUTH)
                 app.app_config.ssl_context.load_cert_chain(certfile=app.app_config.certfile, keyfile=app.app_config.keyfile)
@@ -559,6 +579,7 @@ class WebApp:
         app.app_config = app_config
         server = web.Server(app.router)
         server.client_max_size = None
+
         app.app_config.runner = web.ServerRunner(server)
             
         await app.app_config.runner.setup()
@@ -580,14 +601,13 @@ class WebApp:
     def runner(app, app_config):
         try:
             run(app.run(app_config))
-        except KeyboardInterrupt: exit()
-        except (ConnectionResetError, OSError, AttributeError, TypeError):
+        except KeyboardInterrupt:
+            exit("[%s]:: KeyboardInterrupted" % (str(dt.now())))
+        except CancelledError:
             pass
         except Exception as e:
             p("Exception caught: %s" % str(e))
-        except BaseException as e:
-            p("Base Exception caught: %s" % str(e))
-            
+
 if __name__ == '__main__':
     config = run(MyDict(host="0.0.0.0", port=8000, ssl={"certfile": "cert.pem", "keyfile": "key.pem"}))
     wb = run(WebApp().init())

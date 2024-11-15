@@ -14,6 +14,7 @@ from Crypto.Protocol.KDF import PBKDF2
 from base64 import b64encode, b64decode
 from datetime import datetime as dt, timedelta
 from json import loads, dumps
+import time
 
 p = print
 
@@ -28,8 +29,7 @@ class MyDict:
 class Stuff:
     @classmethod
     async def headers(app, **kwargs):
-        app = app()
-        app.response_headers = {
+        response_headers = {
             'Server': 'Predator',
             'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
             'X-Frame-Options': 'SAMEORIGIN',
@@ -38,9 +38,9 @@ class Stuff:
         }
 
         if kwargs:
-            app.response_headers.update(**kwargs)
+            response_headers.update(**kwargs)
 
-        return app.response_headers
+        return response_headers
 
 class Error(Exception):
     def __init__(app, message=None):
@@ -50,6 +50,26 @@ class Error(Exception):
     def __str__(app) -> str:
         return app.message
 
+class Abort(Exception):
+    def __init__(app, message="Something went wrong", **kwargs):
+        super().__init__(message)
+        app.message = str(message)
+        app.kwargs = kwargs
+
+    def __str__(app) -> str:
+        return app.message
+
+    async def text(app, r):
+        await Log.out(app.message)
+        response = web.Response(
+            status = app.kwargs.get("status", 403),
+            text = app.message,
+            headers = app.kwargs.get("headers", {})
+        )
+
+        r.response = response
+        return response
+
 class Pack:
     @classmethod
     async def set(app, **kwargs):
@@ -58,101 +78,60 @@ class Pack:
         return app
 
 class Log:
-    known_exceps = [
-        "transport",
-        "Task",
-        "Cannot write",
-        "closing transport",
-        "Cannot write to closing transport"
-    ]
-
-    embody = None
     @classmethod
-    async def out(app, e, **kwargs):
+    async def out_(app, e):
         try:
-            app = app()
-            p(e)
-            return app
+            e = str(e).strip()
+            fname = inspect_stack()[1].function
+            log = False
 
-            app.__dict__.update(kwargs)
-            if app.embody is None:
-                app.embody = await Pack.set()
-
-            app.embody.e = str(e).strip()
-            app.embody.fname = inspect_stack()[1].function
-            app.embody.log = False
-
-            for a in app.known_exceps:
-                if a in app.embody.e:
-                    app.embody.log = False
+            known_exceps = [
+                "transport",
+                "Task",
+                "Cannot write",
+                "closing transport",
+                "Cannot write to closing transport"
+            ]
+            for a in known_exceps:
+                if a in e:
+                    log = False
                     break
                 else:
-                    app.embody.log = True
+                    log = True
 
-            if app.embody.log:
-                app.embody.e = "[%s]:: %s ::" % (
-                    app.embody.fname,
-                    app.embody.e
+            if log:
+                e = "[%s]:: %s ::" % (
+                    fname,
+                    e
                 )
-                p("$: %s" % (app.embody.e))
-
-            del app.embody
-            return app
-
+                print("$: %s" % (e))
         except Exception as e:
             print(e)
-
-class Stream_Response:
+    
     @classmethod
-    async def init(app, r, **kwargs):
-        app = app()
-        app.r = r
-
-        app.r.response = web.StreamResponse(
-            status=kwargs.get("status", 200),
-            headers=await Stuff.headers(**kwargs.get("headers", {}))
-        )
-        return app
-
-    async def json(app):
-        app.r.response.headers.update({
-            'Content-Range': '',
-            'Accept-Ranges': 'bytes',
-            'Content-Type': "application/json",
-        })
-
-    async def raw(app):
-        app.r.response.headers.update({
-            'Content-Range': '',
-            'Accept-Ranges': 'bytes',
-        })
-
-    async def text(app):
-        app.r.response.headers.update({
-            'Content-Range': '',
-            'Accept-Ranges': 'bytes',
-            'Content-Type': "text/plain",
-        })
-
-    async def write(app, content):
+    async def out(app, e):
         try:
-            if not app.r.response.prepared:
-                await app.r.response.prepare(app.r.request)
+            e = str(e).strip()
+            log = False
 
-            if isinstance(content, (str,)):
-                content = content.encode()
+            known_exceps = [
+                "transport",
+                "Task",
+                "Cannot write",
+                "closing transport",
+                "Cannot write to closing transport"
+            ]
+            for a in known_exceps:
+                if a in e:
+                    log = False
+                    break
+                else:
+                    log = True
 
-            await app.r.response.write(content)
+            if log:
+                print("$ (%s): %s" % (dt.now(), e))
         except Exception as e:
-            await Log.out(e)
-
-    async def finish(app, content=None):
-        try:
-            if content is not None:
-                await app.write(content)
-            await app.r.response.write_eof()
-        except Exception as e:
-            await Log.out(e)
+            print(e)
 
 class Safe:
     def __init__(app, key, salt="Kim Jong Un"):
@@ -187,120 +166,14 @@ class Safe:
     async def safe_tool(app, og: MyDict):
         return await to_thread(app.safe_tool_sync, og)
 
-class Static:
-    async def init(app, **kwargs):
-        app.__dict__.update(kwargs)
-        return app
-
-    async def initialize_response(app, r, **kwargs):
-        async def _func():
-            if not (file := r.override_file):
-                if not (file := r.params.get(r.arg)):
-                    raise Error("serve parameter is required.")
-
-                r.file = "./static/%s" % (file)
-            else:
-                r.file = file
-
-            if not path.exists(r.file):
-                raise Error("Not found")
-
-            r.d = await Pack.set()
-
-            r.d.fname = r.file
-            r.d.filename = path.basename(r.d.fname)
-            r.d.file_size = path.getsize(r.d.fname)
-
-            r.d.content_type, _ = guess_type(r.d.fname)
-            r.d.content_disposition = 'inline; filename="%s"' % (r.d.filename)
-
-            if (range_header := r.headers.get('Range', r.params.get('Range', None))):
-                r.d.start, r.d.end = (byte_range := range_header.strip().split('=')[1]).split('-')
-
-                r.d.start = int(r.d.start)
-                r.d.end = int(r.d.end) if r.d.end else r.d.file_size - 1
-            else:
-                r.d.start, r.d.end = 0, r.d.file_size - 1
-
-            r.d.content_range = 'bytes %s-%s/%s' % (r.d.start, r.d.end, r.d.file_size) if r.headers.get("Range", None) else ''
-
-            r.d.content_length = str(r.d.end - r.d.start + 1)
-            if not r.d.content_type or kwargs.get("download_file"):
-                r.d.content_type = "application/octet-stream"
-                r.d.content_disposition = 'attachment; filename="%s"' % (r.d.filename)
-
-            r.d.status = 206 if range_header is not None else 200
-            # expires_date = dt.utcnow() + timedelta(hours=24)
-            # r.d.Expires = expires_date.strftime('%a, %d %b %Y %H:%M:%S GMT')
-
-        await _func()
-
-        if r.d:
-            headers = {
-                'Cache-Control': 'public, max-age=86400',
-                'Expires': r.d.Expires,
-                'Content-Range': r.d.content_range,
-                'Accept-Ranges': 'bytes',
-                'Content-Length': r.d.content_length,
-                'Content-Type': r.d.content_type,
-                'Content-Disposition': r.d.content_disposition
-            }
-            r.response = web.StreamResponse(
-                status=r.d.status,
-                headers=await Stuff.headers(**headers)
-            )
-        else:
-            raise Error("Something went wrong")
-
-        return r
-
-    async def static_file_server(app, r, override_file=0, serve_chunk=0, arg="serve", config={}):
-        r.override_file = override_file
-        r.serve_chunk = serve_chunk
-        r.arg = arg
-
-        r = await app.initialize_response(r, **config)
-
-        async with iopen(r.d.fname, "rb") as f:
-            if not r.response.prepared:
-                await r.response.prepare(r.request)
-
-            while True:
-                try:
-                    await f.seek(r.d.start)
-
-                    if not (chunk := await f.read(r.serve_chunk or 1024)):
-                        break
-
-                    r.d.start += len(chunk)
-                    await r.response.write(chunk)
-                except Exception as e:
-                    await Log.out(e)
-                    break
-            try:
-                await r.response.write_eof()
-            except Exception as e:
-                await Log.out(e)
-
-        return r
-
 class Stream:
     @classmethod
     async def init(app, r, **kwargs):
         app = app()
         app.r = r
-        # app.__dict__.update(**kwargs)
-        app.status = 200 if (sts := kwargs.get("status")) is None else sts
-
-        app.headers = {
-            'Server': 'Predator',
-            'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
-            'X-Frame-Options': 'SAMEORIGIN',
-            'X-XSS-Protection': '1; mode=block',
-            'Referrer-Policy': 'origin-when-cross-origin'
-        }
+        app.status = kwargs.get("status", 200)
+        app.headers = await Stuff.headers()
         app.headers.update(kwargs.get("headers", {}))
-
         return app
 
     async def json(app):
@@ -353,62 +226,13 @@ class Stream:
         except Exception as e:
             await Log.out(e)
 
-class WebApp:
+class Static:
     @classmethod
-    async def init(app, **kwargs):
-        app = app()
-        app.__dict__.update(kwargs)
-        app.web = web
-        app.response_headers = await Stuff.headers()
-        app.dev = 1
-
-        app.routes = await Pack.set()
-        app.methods = {}
-
-        app.ddos_protection = 0
-        app.throttle_at_ram = 0.20
-        app.secure_host = 0
-        app.requests_count = 0
-
-        return app
-
-    def route(app, func: Callable):
-        route_name = func.__name__
-        signature = sig(func)
-
-        params = dict(signature.parameters)
-        methods_param = params.get("methods", None)
-        alt_route = params.get("route", None)
-        methods = methods_param.default if methods_param and methods_param.default is not Parameter.empty else ["GET", "POST", "OPTIONS", "PUT", "PATCH", "HEAD", "DELETE"]
-
-        if alt_route: route_name = alt_route.default.replace("/", "_")
-
-        data = {
-            'func': func,
-            'params': params,
-            'methods': methods,
-        }
-
-        app.methods[route_name] = data
-        return func
-
-    async def json_response(app, r, _dict_={}):
-        r.response = web.json_response(_dict_)
-        return
-
-    async def serve_file(app, r, file_path, chunk_size=1, response_headers={}):
+    async def serve_file(app, r, file_path, chunk_size=1024, vars={}, response_headers={}):
         try:
-            response_headers.update({
-                'Server': 'Predator',
-                'Strict-Transport-Security': 'max-age=63072000; includeSubdomains', 
-                'X-Frame-Options': 'SAMEORIGIN',
-                'X-XSS-Protection': '1; mode=block',
-                'Referrer-Policy': 'origin-when-cross-origin'
-            })
-
+            response_headers.update(await Stuff.headers())
             filename = path.basename(file_path)
             file_size = path.getsize(file_path)
-
             content_type, _ = guess_type(file_path)
             content_disposition = 'inline; filename="%s"' % (filename)
 
@@ -437,9 +261,9 @@ class WebApp:
             })
 
             r.response = web.StreamResponse(
-                    status=status_code,
-                    reason="OK",
-                    headers=response_headers
+                status=status_code,
+                reason="OK",
+                headers=response_headers
             )
             await r.response.prepare(r.request)
 
@@ -449,93 +273,224 @@ class WebApp:
                     try:
                         if not (chunk := await f.read(chunk_size)):
                             return None
-                        else:
-                            await r.response.write(chunk)
+                        
+                        if vars != {}:
+                            for key, val in vars.items():
+                                if not isinstance(key, (bytes, bytearray)):
+                                    key = key.encode()
+
+                                if not isinstance(val, (bytes, bytearray)):
+                                    val = val.encode()
+                                    
+                                if key in chunk:
+                                    chunk = chunk.replace(key, val)
+                        
+                        await r.response.write(chunk)
                     except Exception as e:
                         if "transport" not in str(e).strip():
                             p(e)
                         return None
 
         except Exception as e:
-            # p("error: %s" % str(e))
             return None
 
         await r.response.write_eof()
 
-    async def get_json(app, r, size=1024, body = b""):
+class Request:
+    @classmethod
+    async def gen(app, request):
+        app = app() # Immutable dict
+        app.request = request
+        app.json = request.json
+        app.content = request.content
+        app.response = None
+        app.tail = request.path
+        app.params = request.query
+        app.headers = request.headers
+        app.method = request.method
+        app.ip = request.remote
+        app.route_name = request.path
+
+        return app
+
+class Make_request_:
+    @classmethod
+    async def json_response(app, r, _dict_={}):
+        r.response = web.json_response(_dict_)
+        return r
+
+    @classmethod
+    async def json(app, r, size=1024, body = b""):
+        if r.method in ["POST"]:
+            while not r.content.at_eof():
+                try:
+                    chunk = await r.content.read(size)
+                    if not chunk:
+                        break
+                    else:
+                        body += chunk
+                except (UnicodeError, Exception) as e:
+                    raise Error("Something went wrong")
+                    return
+            try:
+                body = body.decode("utf-8")
+                body = loads(body)
+            except (UnicodeError, Exception) as e:
+                raise Error("Something went wrong")
+                return
+    
+            return body
+        else:
+            data = {a:b for a, b in r.request.query.items()}
+            return data
+
+    @classmethod
+    async def chunks(app, r, size=1024):
         while not r.content.at_eof():
             try:
                 chunk = await r.content.read(size)
                 if not chunk:
                     break
                 else:
-                    body += chunk
+                    yield chunk
             except (UnicodeError, Exception) as e:
+                p(e)
                 raise Error("Something went wrong")
                 return
-        try:
-            body = body.decode("utf-8")
-            body = loads(body)
-        except (UnicodeError, Exception) as e:
-            raise Error("Something went wrong")
-            return
+            
+    @classmethod
+    async def headers(app, r):
+        h = {a:b for a,b in r.request.headers.items()}
+        return h
 
-        return body
+class WebApp:
+    environment = "development"
+    @classmethod
+    async def init(app, **kwargs):
+        app = app()
+        app.__dict__.update(kwargs)
+        app.web = web
+        app.response_headers = await Stuff.headers()
+        app.dev = 1
 
-    async def gen_request(app, incoming_request):
-        r = await Pack.set()
-        r.request = incoming_request
-        r.json = r.request.json
-        r.content = r.request.content
+        app.routes = await Pack.set()
+        app.ddos_protection = 0
+        app.throttle_at_ram = 0.20
+        app.secure_host = 0
+        app.requests_count = 0
+        app.default_methods = ["GET", "POST", "OPTIONS", "PUT", "PATCH", "HEAD", "DELETE"]
+
+        return app
+    
+    def add_route_sync(app, route_name: str, incoming_data: dict):
+        if not (func := incoming_data.get("func")):
+            raise Error("func is required")
         
-        r.response = None
-        r.tail = r.request.path
-        r.params = r.request.query
-        r.headers = r.request.headers
+        if not isinstance(func, (Callable,)):
+            raise Error("func is not Callable")
 
-        r.method = r.request.method
-        r.ip = r.request.remote
-        r.route_name = r.tail
+        signature = sig(func)
+        params = dict(signature.parameters)
 
-        return r
+        methods_param = params.get("methods", None)
+        if methods_param:
+            methods = methods_param.default
+        else:
+            methods = app.default_methods
 
-    async def router(app, incoming_request, request=None):
+        if isinstance(methods, list):
+            methods = {method: True for method in methods}
+        elif isinstance(methods, str):
+            methods = {methods: True}
+
+        data = {
+            "func": func,
+            "methods": methods,
+            "params": incoming_data.get("params", {})
+        }
+    
+        app.routes.__dict__[route_name] = data
+
+    async def add_route(app, route_name: str, incoming_data: dict):
+        app.add_route_sync(route_name, incoming_data)
+
+    def route(app, func: Callable):
+        route_name = str(func.__name__).replace("_", "/")
+        app.add_route_sync(route_name, {"func": func})
+        
+        return func
+
+    async def serve_route(app, r, route=None):
+        if "before_middleware" in app.routes.__dict__:
+            route = app.routes.__dict__["before_middleware"]
+            if not r.method in route.get("methods", {}):
+                raise Abort("Illegal method")
+
+        if route is None and r.route_name in app.routes.__dict__:
+            route = app.routes.__dict__[r.route_name]
+            if not r.method in route.get("methods", {}):
+                raise Abort("Illegal method")
+        else:
+            if route is None and "dynamic_routes" in app.__dict__:
+                for key, val in app.routes.__dict__:
+                    if r.route_name.startswith(key):
+                        route = val
+
+        if route is None and "handle_all" in app.routes.__dict__:
+            route = app.routes.__dict__["handle_all"]
+            if not r.method in route.get("methods", {}):
+                raise Abort("Illegal method")
+
+        if "after_middleware" in app.routes.__dict__:
+            route = app.routes.__dict__["after_middleware"]
+            if not r.method in route.get("methods", {}):
+                raise Abort("Illegal method")
+
+        if route is not None:
+            await route.get("func")(r, **route.get("params"))
+        else:
+            raise Abort("Not Found", status=404)
+
+    async def handle_preqs(app, r):
+        if r.method in "HEAD":
+            raise pd.Abort(
+                "OK",
+                status = 200,
+                headers = {
+                    "time": str(int(time.time())),
+                },
+            )
+
+    async def router(app, aiohttp_request, r=None):
         try:
-            r = await app.gen_request(incoming_request)
+            r = await Request.gen(aiohttp_request)
 
-            if r.response is None and "before_middleware" in app.routes.__dict__:
-                route = app.routes.__dict__["before_middleware"]
-                await route(r)
+            await Log.out("[%s] => %s@ %s" % (r.ip, r.method, r.tail))
 
-            if r.route_name in app.routes.__dict__:
-                route = app.routes.__dict__[r.route_name]
-                await route(r)
-
-            if r.response is None and "handle_all" in app.routes.__dict__:
-                route = app.routes.__dict__["handle_all"]
-                await route(r)
-
+            await app.handle_preqs(r)
+            await app.serve_route(r)
             if r.response is None:
-                r.response = web.Response(text=r.ip)
+                raise Abort()
 
-            if "after_middleware" in app.routes.__dict__:
-                route = app.routes.__dict__["after_middleware"]
-                await route(r)
+        except KeyboardInterrupt:
+            return
+        except Abort as e:
+            await e.text(r)
+        except Error as e:
+            try:
+                raise Abort(str(e), status=403)
+            except Abort as e:
+                await e.text(r)
 
-            return await app.finalize(r)
-        except (CancelledError, Error, AttributeError, Exception) as e:
-            if isinstance(e, (Error,)):
-                r.response = web.Response(status=403, text=str(e))
-            else:
-                p("Exception: %s" % str(e))
-                r.response = web.Response(status=500, text="Something went wrong")
-
+        except (CancelledError, AttributeError, Exception) as e:
+            await Log.out(e)
+        finally:
             return await app.finalize(r)
 
     async def finalize(app, r):
-        if "response" in r.__dict__:
-            r.response.headers.update(app.response_headers)
-            return r.response
+        if r is not None and "response" in r.__dict__ and r.response is not None:
+                r.response.headers.update(await Stuff.headers())
+                return r.response
 
     async def config_ssl(app):
         def setup_ssl(system = None):
